@@ -67,10 +67,12 @@ from typing import Any, Generator, Hashable, Optional, Tuple
 import pendulum
 from attrs import define
 
+HashedKey = int
+
 
 class Cache(ABC):
     @abstractmethod
-    def put(key: Hashable, value: Any):
+    def put(key: Hashable, value: Any) -> HashedKey:
         pass
 
     @abstractmethod
@@ -161,6 +163,14 @@ class BaseCache(Cache):
                 cursor.close()
 
 
+def auto_hash_key(func):
+    def wrapper(self, key: Hashable, *args, **kwargs):
+        key = get_hash_for_key(key)
+        return func(self, key, *args, **kwargs)
+
+    return wrapper
+
+
 @define
 class FunctionalCache(BaseCache):
     @property
@@ -232,16 +242,73 @@ class FunctionalCache(BaseCache):
                 ("max_size", self.settings.max_size_in_bytes),
             )
 
+    def fits(self, size: int) -> bool:
+        with self.cursor() as cursor:
+            # We are currently tracking the size of the cache, and the max size
+            # is stored in the settings table.
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'current_size'
+                """
+            )
+            current_size: int = int(cursor.fetchone()[0])
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'max_size'
+                """
+            )
+            max_size: int = int(cursor.fetchone()[0])
+            return current_size + size <= max_size
 
-HashedKey = int
+    @auto_hash_key
+    def exists(self, key: Hashable) -> bool:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            fetched = cursor.fetchone()
+            if fetched is None:
+                return False
+            return fetched[0] > 0
 
+    def _get_filename_for_key(
+        self, key: HashedKey, default: str = None
+    ) -> Optional[str]:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT filename
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            filename_res = cursor.fetchone()
+            if filename_res is None:
+                return default
+            return filename_res[0]
 
-def auto_hash_key(func):
-    def wrapper(self, key: Hashable, *args, **kwargs):
-        key = get_hash_for_key(key)
-        return func(self, key, *args, **kwargs)
-
-    return wrapper
+    @auto_hash_key
+    def _get_size_for_key(self, key: Hashable) -> int:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT size
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            return cursor.fetchone()[0]
 
 
 @define
@@ -250,7 +317,7 @@ class LRUCache(FunctionalCache):
         self._create_cache_table_and_metadata()
 
     @auto_hash_key
-    def put(self, key: Hashable, value: Any):
+    def put(self, key: Hashable, value: Any) -> HashedKey:
         predicted_size = self.storage.predict_size(value)
         if not self.exists(key):
             self._evict_until_satified(predicted_size)
@@ -276,20 +343,7 @@ class LRUCache(FunctionalCache):
                 self.delete(evict_key)
 
     @auto_hash_key
-    def _get_size_for_key(self, key: Hashable) -> int:
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT size
-                FROM {self.cache_table}
-                WHERE key = ?
-                """,
-                (key,),
-            )
-            return cursor.fetchone()[0]
-
-    @auto_hash_key
-    def _put_new(self, key: Hashable, value: Any):
+    def _put_new(self, key: Hashable, value: Any) -> HashedKey:
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
             filename, size = self.storage.put(key, value)
@@ -300,9 +354,10 @@ class LRUCache(FunctionalCache):
                 """,
                 (key, filename, size, now, now),
             )
+            return key
 
     @auto_hash_key
-    def _put_update(self, key: Hashable, value: Any):
+    def _put_update(self, key: Hashable, value: Any) -> HashedKey:
         prev_filename = self._get_filename_for_key(key)
         with self.storage.defer_delete(
             prev_filename
@@ -317,22 +372,7 @@ class LRUCache(FunctionalCache):
                 """,
                 (filename, size, now, now, key),
             )
-
-    @auto_hash_key
-    def exists(self, key: Hashable) -> bool:
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM {self.cache_table}
-                WHERE key = ?
-                """,
-                (key,),
-            )
-            fetched = cursor.fetchone()
-            if fetched is None:
-                return False
-            return fetched[0] > 0
+            return key
 
     @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
@@ -351,23 +391,6 @@ class LRUCache(FunctionalCache):
             )
             return self.storage.get(filename)
 
-    def _get_filename_for_key(
-        self, key: HashedKey, default: str = None
-    ) -> Optional[str]:
-        with self.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT filename
-                FROM {self.cache_table}
-                WHERE key = ?
-                """,
-                (key,),
-            )
-            filename_res = cursor.fetchone()
-            if filename_res is None:
-                return default
-            return filename_res[0]
-
     @auto_hash_key
     def delete(self, key: Hashable):
         if not self.exists(key):
@@ -381,29 +404,6 @@ class LRUCache(FunctionalCache):
                 """,
                 (key,),
             )
-
-    def fits(self, size: int) -> bool:
-        with self.cursor() as cursor:
-            # We are currently tracking the size of the cache, and the max size
-            # is stored in the settings table.
-            cursor.execute(
-                f"""
-                SELECT value
-                FROM {self.metadata_table}
-                WHERE setting = 'current_size'
-                """
-            )
-            current_size: int = int(cursor.fetchone()[0])
-            cursor.execute(
-                f"""
-                SELECT value
-                FROM {self.metadata_table}
-                WHERE setting = 'max_size'
-                """
-            )
-            max_size: int = int(cursor.fetchone()[0])
-            print(current_size, size, max_size)
-            return current_size + size <= max_size
 
     def _create_cache_table_and_metadata(self):
         with self.cursor() as cursor:
@@ -464,55 +464,109 @@ class LRUCache(FunctionalCache):
 
 @define
 class LFUCache(FunctionalCache):
-    def put(self, key: Hashable, value: Any):
+    def __attrs_post_init__(self):
+        self._create_cache_table_and_metadata()
+
+    @auto_hash_key
+    def put(self, key: Hashable, value: Any, ttl: Optional[int] = None) -> HashedKey:
+        predicted_size = self.storage.predict_size(value)
+        if not self.exists(key):
+            self._evict_until_satified(predicted_size)
+            return self._put_new(key, value, ttl)
+        else:
+            current_size = self._get_size_for_key(key)
+            self._evict_until_satified(predicted_size - current_size)
+            return self._put_update(key, value, ttl)
+
+    def _evict_until_satified(self, size: int):
+        while not self.fits(size):
+            # Evict the least frequently used element.
+            # TODO: Consider handling breaking ties.
+            with self.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT key
+                    FROM {self.cache_table}
+                    ORDER BY accessed_count ASC
+                    LIMIT 1
+                    """
+                )
+                evict_key = cursor.fetchone()[0]
+                self.delete(evict_key)
+
+    @auto_hash_key
+    def _put_new(
+        self, key: Hashable, value: Any, ttl: Optional[int] = None
+    ) -> HashedKey:
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
+            filename, size = self.storage.put(key, value)
             con.execute(
-                """
-                INSERT INTO LFUCache (key, value, stored_at, accessed_at, ttl)
-                VALUES (?, ?, ?, ?, ?)
+                f"""
+                INSERT INTO {self.cache_table} (key, filename, size, stored_at, accessed_count, ttl)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (key, value, now, now, None),
+                (key, filename, size, now, 0, ttl),
             )
+            return key
 
-    def get(self, key: Hashable) -> Any:
-        with self.cursor() as cursor:
+    @auto_hash_key
+    def _put_update(
+        self, key: Hashable, value: Any, ttl: Optional[int] = None
+    ) -> HashedKey:
+        prev_filename = self._get_filename_for_key(key)
+        with self.storage.defer_delete(
+            prev_filename
+        ) as _, self.commit_connection() as con:
+            now = pendulum.now().timestamp()
+            filename, size = self.storage.put(key, value)
+            # We reset the accessed_count to 0 because we are updating the value.
+            con.execute(
+                f"""
+                UPDATE {self.cache_table}
+                SET filename = ?, size = ?, stored_at = ?, accessed_count = ?, ttl = ?
+                WHERE key = ?
+                """,
+                (filename, size, now, 0, ttl, key),
+            )
+            return key
+
+    @auto_hash_key
+    def get(self, key: Hashable, default: Any = None) -> Any:
+        if not self.exists(key):
+            return default
+        filename = self._get_filename_for_key(key)
+        with self.commit_connection() as cursor:
             cursor.execute(
-                """
-                SELECT value
-                FROM LFUCache
+                f"""
+                UPDATE {self.cache_table}
+                SET accessed_count = accessed_count + 1
                 WHERE key = ?
                 """,
                 (key,),
             )
-            return cursor.fetchone()[0]
+            return self.storage.get(filename)
 
+    @auto_hash_key
     def delete(self, key: Hashable):
-        with self.commit_connection() as con:
+        if not self.exists(key):
+            return
+        filename = self._get_filename_for_key(key)
+        with self.storage.defer_delete(filename) as _, self.commit_connection() as con:
             con.execute(
-                """
-                DELETE FROM LFUCache
+                f"""
+                DELETE FROM {self.cache_table}
                 WHERE key = ?
                 """,
                 (key,),
             )
-
-    def is_full(self) -> bool:
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT COUNT(*)
-                FROM LFUCache
-                """
-            )
-            return cursor.fetchone()[0] == self.settings
 
     def _create_cache_table_and_metadata(self):
         with self.cursor() as cursor:
-            # Creates settings table
+            # Creates metadata table
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS LFUCacheSettings (
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.metadata_table} (
                     setting TEXT NOT NULL UNIQUE,
                     value TEXT NOT NULL
                 )
@@ -521,39 +575,48 @@ class LFUCache(FunctionalCache):
             # Creates the main cache table, note that we don't have a expires_at
             # because we can calculate it using the stored_at and ttl
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS LFUPrimaryCache (
-                    rowid INTEGER PRIMARY KEY,
-                    key BLOB NOT NULL,
-                    value BLOB NOT NULL,
-                    stored_at TIMESTAMP,
-                    accessed_at INTEGER,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.cache_table} (
+                    key INTEGER PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    stored_at TIMESTAMP NOT NULL,
+                    accessed_count INTEGER NOT NULL,
                     ttl INTEGER
                 )
                 """
             )
 
-            # Create the total size table
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS LFUTotalSize (
-                    size INTEGER
-                )
+                f"""
+                CREATE INDEX IF NOT EXISTS LFUPrimaryCache_key
+                ON {self.cache_table} (key)
                 """
             )
+        self._create_triggers_for_size_tracking()
+        self._set_settings()
 
-            # Create a simple trigger that updates the access_at
+    @property
+    def size_table(self) -> str:
+        return "LFUTotalSize"
+
+    @property
+    def cache_table(self) -> str:
+        return "LFUPrimaryCache"
+
+    @property
+    def metadata_table(self) -> str:
+        return "LFUMetadata"
+
+    def show_cache(self):
+        with self.cursor() as cursor:
             cursor.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS update_access_at_LFU
-                AFTER UPDATE ON LFUPrimaryCache
-                BEGIN
-                    UPDATE LFUPrimaryCache
-                    SET accessed_at = CURRENT_TIMESTAMP
-                    WHERE rowid = NEW.rowid;
-                END
+                f"""
+                SELECT *
+                FROM {self.cache_table}
                 """
             )
+            print(cursor.fetchall())
 
 
 @define
