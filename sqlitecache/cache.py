@@ -56,10 +56,13 @@ Delete operation:
 NOTE: The above algorithms are general pseudocode, the actual implementation
 lives in the code. However, it is a nice mental model to have when reading this module.
 """
+import os
+import pickle
 import sqlite3
+import uuid
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Generator, Hashable
+from typing import Any, Generator, Hashable, Tuple
 
 import pendulum
 from attrs import define
@@ -71,91 +74,57 @@ class Cache(ABC):
         pass
 
     @abstractmethod
-    def get(key: Hashable, value: Any):
+    def get(key: Hashable, default: Any = None) -> Any:
         pass
 
     @abstractmethod
-    def delete(key: Hashable, value: Any):
+    def delete(key: Hashable):
         pass
 
     @abstractmethod
-    def is_full() -> bool:
+    def fits(size: int) -> bool:
+        """Check whether we can insert something of size `size` into the cache."""
         pass
 
 
-class Storage(ABC):
-    pass
+@define(frozen=False)
+class DiskStorage:
+    storage_dir: str
+
+    def put(self, key: Hashable, value: Any) -> Tuple[str, int]:
+        filename = f"{uuid.uuid4().hex}.cache"
+        filepath = os.path.join(self.storage_dir, filename)
+        with open(filepath, "wb") as f:
+            pickle.dump(value, f)
+        return filename, os.path.getsize(filepath)
+
+    def get(self, filename: str) -> Any:
+        filepath = os.path.join(self.storage_dir, filename)
+        with open(filepath, "rb") as f:
+            return pickle.load(f)
+
+    def delete(self, filename: str):
+        filepath = os.path.join(self.storage_dir, filename)
+        os.remove(filepath)
+
+    def predict_size(self, value: Any) -> int:
+        return len(pickle.dumps(value))
 
 
-class FauxStorage(Storage):
-    pass
+def get_hash_for_key(key: Hashable) -> int:
+    return hash(key) & 0xFFFFFFFF
 
 
 @define
 class CacheSettings:
-    capacity_gb: float = 1.0
-    eviction_policy: str = "LRU"
+    max_size_in_bytes: int
 
 
 @define
-class PersistentCache(Cache):
+class BaseCache(Cache):
+    db: str
+    storage: DiskStorage
     settings: CacheSettings
-    backend: Storage
-    db: str = "cache.db"
-
-    def __attrs_post_init__(self):
-        self._create_cache_table_and_metadata()
-
-    @classmethod
-    def new(cls, db: str, settings: CacheSettings, backend: Storage):
-        return cls(db=db, settings=settings, backend=backend)
-
-    def put(self, key: Hashable, value: Any):
-        # Assume integers
-        now = pendulum.now().timestamp()
-        with self.commit_connection() as con:
-            con.execute(
-                """
-                INSERT INTO PrimaryCache (key, value, stored_at, accessed_at, accessed_count, ttl, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (key, value, now, now, 0, None, None),
-            )
-
-    def get(self, key: Hashable) -> Any:
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT value
-                FROM PrimaryCache
-                WHERE key = ?
-                """,
-                (key,),
-            )
-            return cursor.fetchone()[0]
-
-    def get_all_rows(self):
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT *
-                FROM PrimaryCache
-                """
-            )
-            return cursor.fetchall()
-
-    def delete(self, key: Hashable):
-        with self.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM PrimaryCache
-                WHERE key = ?
-                """,
-                (key,),
-            )
-
-    def is_full(self) -> bool:
-        return False
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -180,20 +149,198 @@ class PersistentCache(Cache):
             finally:
                 cursor.close()
 
-    def _create_cache_table_and_metadata(self):
-        # To support LRU + LFU, we need the number of times a key is accessed
-        # and the last time it was accessed. We will also have a TTL (time-to-live)
-        # for each key. If the key is not accessed within the TTL, it will be evicted.
-        # We also have to keep track of the settings set for the cache, which we keep
-        # in a separate table.
-        # Also, to speed up "is_full" check, we can keep track of the total size
-        # of the cache in a separate table and update it whenever we insert, modify
-        # or delete an entry.
+    @property
+    @abstractmethod
+    def size_table(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def cache_table(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def metadata_table(self) -> str:
+        pass
+
+    def _create_triggers_for_size_tracking(self):
         with self.cursor() as cursor:
-            # Creates settings table
             cursor.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS insert_{self.size_table}
+                AFTER INSERT ON {self.cache_table} FOR EACH ROW
+                BEGIN
+                    UPDATE {self.metadata_table}
+                    SET value = value + NEW.size
+                    WHERE setting = 'current_size';
+                END
                 """
-                CREATE TABLE IF NOT EXISTS CacheSettings (
+            )
+            cursor.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS delete_{self.size_table}
+                AFTER DELETE ON {self.cache_table} FOR EACH ROW
+                BEGIN
+                    UPDATE {self.metadata_table}
+                    SET value = value - OLD.size
+                    WHERE setting = 'current_size';
+                END
+                """
+            )
+
+            cursor.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS update_{self.size_table}
+                AFTER UPDATE ON {self.cache_table} FOR EACH ROW
+                BEGIN
+                    UPDATE {self.metadata_table}
+                    SET value = value + NEW.size - OLD.size
+                    WHERE setting = 'current_size';
+                END
+                """
+            )
+
+    def _set_settings(self):
+        with self.commit_connection() as con:
+            con.execute(
+                f"""
+                INSERT INTO {self.metadata_table} (setting, value)
+                VALUES (?, ?)
+                """,
+                ("current_size", 0),
+            )
+            con.execute(
+                f"""
+                INSERT INTO {self.metadata_table} (setting, value)
+                VALUES (?, ?)
+                """,
+                ("max_size", self.settings.max_size_in_bytes),
+            )
+
+
+HashedKey = int
+
+
+def auto_hash_key(func):
+    def wrapper(self, key: Hashable, *args, **kwargs):
+        key = get_hash_for_key(key)
+        return func(self, key, *args, **kwargs)
+
+    return wrapper
+
+
+@define
+class LRUCache(BaseCache):
+    def __attrs_post_init__(self):
+        self._create_cache_table_and_metadata()
+
+    @auto_hash_key
+    def put(self, key: Hashable, value: Any):
+        predicted_size = self.storage.predict_size(value)
+        while not self.fits(predicted_size):
+            # Evict the least recently used element
+            with self.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT key
+                    FROM {self.cache_table}
+                    ORDER BY accessed_at ASC
+                    LIMIT 1
+                    """
+                )
+                evict_key = cursor.fetchone()[0]
+                self._delete_hashed_key(evict_key)
+        with self.commit_connection() as con:
+            now = pendulum.now().timestamp()
+            filename, size = self.storage.put(key, value)
+            con.execute(
+                f"""
+                INSERT INTO {self.cache_table} (key, filename, size, stored_at, accessed_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (key, filename, size, now, now),
+            )
+
+    @auto_hash_key
+    def get(self, key: Hashable, default: Any = None) -> Any:
+        filename = self._get_filename_for_key(key)
+        if filename is None:
+            return default
+        with self.commit_connection() as cursor:
+            now = pendulum.now().timestamp()
+            cursor.execute(
+                f"""
+                UPDATE {self.cache_table}
+                SET accessed_at = ?
+                WHERE key = ?
+                """,
+                (now, key),
+            )
+            return self.storage.get(filename)
+
+    def _get_filename_for_key(self, key: HashedKey, default: Any = None) -> str:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT filename
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            filename_res = cursor.fetchone()
+            if filename_res is None:
+                return default
+            return filename_res[0]
+
+    @auto_hash_key
+    def delete(self, key: Hashable):
+        self._delete_hashed_key(key)
+
+    def _delete_hashed_key(self, key: HashedKey):
+        filename = self._get_filename_for_key(key)
+        if filename is None:
+            return
+        self.storage.delete(filename)
+        with self.commit_connection() as con:
+            con.execute(
+                f"""
+                DELETE FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+
+    def fits(self, size: int) -> bool:
+        with self.cursor() as cursor:
+            # We are currently tracking the size of the cache, and the max size
+            # is stored in the settings table.
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'current_size'
+                """
+            )
+            current_size: int = int(cursor.fetchone()[0])
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'max_size'
+                """
+            )
+            max_size: int = int(cursor.fetchone()[0])
+            print(current_size, size, max_size)
+            return current_size + size <= max_size
+
+    def _create_cache_table_and_metadata(self):
+        with self.cursor() as cursor:
+            # Creates metadata table
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.metadata_table} (
                     setting TEXT NOT NULL UNIQUE,
                     value TEXT NOT NULL
                 )
@@ -201,16 +348,117 @@ class PersistentCache(Cache):
             )
             # Creates the main cache table
             cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.cache_table} (
+                    key INTEGER PRIMARY KEY,
+                    filename TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    stored_at TIMESTAMP NOT NULL,
+                    accessed_at INTEGER NOT NULL
+                )
                 """
-                CREATE TABLE IF NOT EXISTS PrimaryCache (
+            )
+
+            # Let's make an index on the key
+            cursor.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS LRUPrimaryCache_key
+                ON {self.cache_table} (key)
+                """
+            )
+        self._create_triggers_for_size_tracking()
+        self._set_settings()
+
+    @property
+    def size_table(self) -> str:
+        return "LRUTotalSize"
+
+    @property
+    def cache_table(self) -> str:
+        return "LRUPrimaryCache"
+
+    @property
+    def metadata_table(self) -> str:
+        return "LRUMetadata"
+
+    def show_cache(self):
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT *
+                FROM {self.cache_table}
+                """
+            )
+            print(cursor.fetchall())
+
+
+@define
+class LFUCache(BaseCache):
+    def put(self, key: Hashable, value: Any):
+        with self.commit_connection() as con:
+            now = pendulum.now().timestamp()
+            con.execute(
+                """
+                INSERT INTO LFUCache (key, value, stored_at, accessed_at, ttl)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (key, value, now, now, None),
+            )
+
+    def get(self, key: Hashable) -> Any:
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT value
+                FROM LFUCache
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            return cursor.fetchone()[0]
+
+    def delete(self, key: Hashable):
+        with self.commit_connection() as con:
+            con.execute(
+                """
+                DELETE FROM LFUCache
+                WHERE key = ?
+                """,
+                (key,),
+            )
+
+    def is_full(self) -> bool:
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM LFUCache
+                """
+            )
+            return cursor.fetchone()[0] == self.settings
+
+    def _create_cache_table_and_metadata(self):
+        with self.cursor() as cursor:
+            # Creates settings table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS LFUCacheSettings (
+                    setting TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            # Creates the main cache table, note that we don't have a expires_at
+            # because we can calculate it using the stored_at and ttl
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS LFUPrimaryCache (
                     rowid INTEGER PRIMARY KEY,
                     key BLOB NOT NULL,
                     value BLOB NOT NULL,
                     stored_at TIMESTAMP,
-                    accessed_at TIMESTAMP,
-                    accessed_count INTEGER,
-                    ttl INTEGER,
-                    expires_at TIMESTAMP
+                    accessed_at INTEGER,
+                    ttl INTEGER
                 )
                 """
             )
@@ -218,74 +466,40 @@ class PersistentCache(Cache):
             # Create the total size table
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS TotalSize (
+                CREATE TABLE IF NOT EXISTS LFUTotalSize (
                     size INTEGER
                 )
                 """
             )
 
-    def _create_triggers_for_bookeeping(self):
-        with self.cursor() as cursor:
-            # Trigger to update the total size table
-            # Triggers for bookeeping the cache table
+            # Create a simple trigger that updates the access_at
             cursor.execute(
                 """
-                CREATE TRIGGER IF NOT EXISTS update_accessed_at
-                AFTER UPDATE ON PrimaryCache
+                CREATE TRIGGER IF NOT EXISTS update_access_at_LFU
+                AFTER UPDATE ON LFUPrimaryCache
                 BEGIN
-                    UPDATE PrimaryCache
+                    UPDATE LFUPrimaryCache
                     SET accessed_at = CURRENT_TIMESTAMP
                     WHERE rowid = NEW.rowid;
                 END
                 """
             )
 
-            cursor.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS update_accessed_count
-                AFTER UPDATE ON PrimaryCache
-                BEGIN
-                    UPDATE PrimaryCache
-                    SET accessed_count = accessed_count + 1
-                    WHERE rowid = NEW.rowid;
-                END
-                """
-            )
 
-            # Add triggers to update the total size. We have to handle
-            # 3 scenarios: insert, update, delete
-            # Insertion directly updates the total size
-            # update: new size - old size
-            # delete: old size - new size
-            # However, let's define a "size" function that returns the size
-            # of a row. This way, we can use it in the triggers.
-            cursor.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS update_total_size_insert
-                AFTER INSERT ON PrimaryCache
-                BEGIN
-                    UPDATE TotalSize
-                    SET size = size + size(NEW);
-                END
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS update_total_size_delete
-                AFTER DELETE ON PrimaryCache
-                BEGIN
-                    UPDATE TotalSize
-                    SET size = size - size(OLD);
-                END
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS update_total_size_update
-                AFTER UPDATE ON PrimaryCache
-                BEGIN
-                    UPDATE TotalSize
-                    SET size = size + size(NEW) - size(OLD);
-                END
-                """
-            )
+@define
+class HybridCache(BaseCache):
+    """A hybrid cache that uses both an LRU and LFU cache.
+    Based on: https://ieeexplore.ieee.org/document/10454976
+    """
+
+    def put(self, key: Hashable, value: Any):
+        pass
+
+    def get(self, key: Hashable) -> Any:
+        pass
+
+    def delete(self, key: Hashable):
+        pass
+
+    def is_full(self) -> bool:
+        pass
