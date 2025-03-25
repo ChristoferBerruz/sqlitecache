@@ -62,7 +62,7 @@ import sqlite3
 import uuid
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Generator, Hashable, Tuple
+from typing import Any, Generator, Hashable, Optional, Tuple
 
 import pendulum
 from attrs import define
@@ -84,6 +84,10 @@ class Cache(ABC):
     @abstractmethod
     def fits(size: int) -> bool:
         """Check whether we can insert something of size `size` into the cache."""
+        pass
+
+    @abstractmethod
+    def exists(key: Hashable) -> bool:
         pass
 
 
@@ -109,6 +113,13 @@ class DiskStorage:
 
     def predict_size(self, value: Any) -> int:
         return len(pickle.dumps(value))
+
+    @contextmanager
+    def defer_delete(self, filename: str):
+        try:
+            yield filename
+        finally:
+            self.delete(filename)
 
 
 def get_hash_for_key(key: Hashable) -> int:
@@ -238,7 +249,16 @@ class LRUCache(BaseCache):
     @auto_hash_key
     def put(self, key: Hashable, value: Any):
         predicted_size = self.storage.predict_size(value)
-        while not self.fits(predicted_size):
+        if not self.exists(key):
+            self._evict_until_satified(predicted_size)
+            self._put_new(key, value)
+        else:
+            current_size = self._get_size_for_key(key)
+            self._evict_until_satified(predicted_size - current_size)
+            self._put_update(key, value)
+
+    def _evict_until_satified(self, size: int):
+        while not self.fits(size):
             # Evict the least recently used element
             with self.cursor() as cursor:
                 cursor.execute(
@@ -250,7 +270,23 @@ class LRUCache(BaseCache):
                     """
                 )
                 evict_key = cursor.fetchone()[0]
-                self._delete_hashed_key(evict_key)
+                self.delete(evict_key)
+
+    @auto_hash_key
+    def _get_size_for_key(self, key: Hashable) -> int:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT size
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            return cursor.fetchone()[0]
+
+    @auto_hash_key
+    def _put_new(self, key: Hashable, value: Any):
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
             filename, size = self.storage.put(key, value)
@@ -263,10 +299,43 @@ class LRUCache(BaseCache):
             )
 
     @auto_hash_key
+    def _put_update(self, key: Hashable, value: Any):
+        prev_filename = self._get_filename_for_key(key)
+        with self.storage.defer_delete(
+            prev_filename
+        ) as _, self.commit_connection() as con:
+            now = pendulum.now().timestamp()
+            filename, size = self.storage.put(key, value)
+            con.execute(
+                f"""
+                UPDATE {self.cache_table}
+                SET filename = ?, size = ?, stored_at = ?, accessed_at = ?
+                WHERE key = ?
+                """,
+                (filename, size, now, now, key),
+            )
+
+    @auto_hash_key
+    def exists(self, key: Hashable) -> bool:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {self.cache_table}
+                WHERE key = ?
+                """,
+                (key,),
+            )
+            fetched = cursor.fetchone()
+            if fetched is None:
+                return False
+            return fetched[0] > 0
+
+    @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
-        filename = self._get_filename_for_key(key)
-        if filename is None:
+        if not self.exists(key):
             return default
+        filename = self._get_filename_for_key(key)
         with self.commit_connection() as cursor:
             now = pendulum.now().timestamp()
             cursor.execute(
@@ -279,7 +348,9 @@ class LRUCache(BaseCache):
             )
             return self.storage.get(filename)
 
-    def _get_filename_for_key(self, key: HashedKey, default: Any = None) -> str:
+    def _get_filename_for_key(
+        self, key: HashedKey, default: str = None
+    ) -> Optional[str]:
         with self.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -296,14 +367,10 @@ class LRUCache(BaseCache):
 
     @auto_hash_key
     def delete(self, key: Hashable):
-        self._delete_hashed_key(key)
-
-    def _delete_hashed_key(self, key: HashedKey):
-        filename = self._get_filename_for_key(key)
-        if filename is None:
+        if not self.exists(key):
             return
-        self.storage.delete(filename)
-        with self.commit_connection() as con:
+        filename = self._get_filename_for_key(key)
+        with self.storage.defer_delete(filename) as _, self.commit_connection() as con:
             con.execute(
                 f"""
                 DELETE FROM {self.cache_table}
