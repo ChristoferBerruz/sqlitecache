@@ -160,6 +160,9 @@ class BaseCache(Cache):
             finally:
                 cursor.close()
 
+
+@define
+class FunctionalCache(BaseCache):
     @property
     @abstractmethod
     def size_table(self) -> str:
@@ -242,7 +245,7 @@ def auto_hash_key(func):
 
 
 @define
-class LRUCache(BaseCache):
+class LRUCache(FunctionalCache):
     def __attrs_post_init__(self):
         self._create_cache_table_and_metadata()
 
@@ -460,7 +463,7 @@ class LRUCache(BaseCache):
 
 
 @define
-class LFUCache(BaseCache):
+class LFUCache(FunctionalCache):
     def put(self, key: Hashable, value: Any):
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
