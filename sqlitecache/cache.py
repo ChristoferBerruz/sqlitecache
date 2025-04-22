@@ -61,11 +61,12 @@ import pickle
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
+from collections import Counter
 from contextlib import contextmanager
 from typing import Any, Generator, Hashable, Optional, Tuple
 
 import pendulum
-from attrs import define
+from attrs import define, field
 
 HashedKey = int
 
@@ -561,6 +562,18 @@ class LFUCache(FunctionalCache):
                 (key,),
             )
 
+    @auto_hash_key
+    def reset_ttl(self, key: Hashable, ttl: int):
+        with self.commit_connection() as con:
+            con.execute(
+                f"""
+                UPDATE {self.cache_table}
+                SET ttl = ?
+                WHERE key = ?
+                """,
+                (ttl, key),
+            )
+
     def _create_cache_table_and_metadata(self):
         with self.cursor() as cursor:
             # Creates metadata table
@@ -620,19 +633,59 @@ class LFUCache(FunctionalCache):
 
 
 @define
-class HybridCache(BaseCache):
+class HybridCache(Cache):
     """A hybrid cache that uses both an LRU and LFU cache.
     Based on: https://ieeexplore.ieee.org/document/10454976
     """
 
+    ttl: int
+    treshold: int
+    lru_cache: LRUCache
+    lfu_cache: LFUCache
+    counter: Counter = field(factory=Counter)
+
+    @auto_hash_key
     def put(self, key: Hashable, value: Any):
-        pass
+        # LRU's cache put handles evictions by least recently used already
+        self.lru_cache.put(key, value)
+        self.counter[key] = 0
 
-    def get(self, key: Hashable) -> Any:
-        pass
+    @auto_hash_key
+    def get(self, key: Hashable, default: Any = None) -> Any:
+        if self.lru_cache.exists(key):
+            self.counter[key] += 1
+            value = self.lru_cache.get(key)
+            if self.counter[key] >= self.treshold:
+                self.move_element_to_lfu(key, value)
+            return value
+        elif self.lfu_cache.exists(key):
+            self.lfu_cache.reset_ttl(key, self.ttl)
+            return self.lfu_cache.get(key)
+        # TODO: Different from the paper, we treat gets as plain lookups
+        # without any side effects.
+        return default
 
+    @auto_hash_key
+    def move_element_to_lfu(self, key: Hashable, value: Any):
+        # Remove element from LRU cache
+        self.lru_cache.delete(key)
+        # Add element to LFU Cache, but evict the ones with the lowest TTL
+        # We need to somehow pass this as a param.
+        self.lfu_cache.put(key, value, self.ttl, resolution="ttl")
+
+    @auto_hash_key
     def delete(self, key: Hashable):
-        pass
+        if self.lru_cache.exists(key):
+            self.lru_cache.delete(key)
+            self.counter.pop(key, None)
+        elif self.lfu_cache.exists(key):
+            self.lfu_cache.delete(key)
+            self.counter.pop(key, None)
 
-    def is_full(self) -> bool:
-        pass
+    @auto_hash_key
+    def exists(self, key: Hashable) -> bool:
+        return self.lru_cache.exists(key) or self.lfu_cache.exists(key)
+
+    @auto_hash_key
+    def fits(self, size: int) -> bool:
+        return self.lru_cache.fits(size)

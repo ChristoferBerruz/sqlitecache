@@ -2,7 +2,13 @@ import os
 
 import pytest
 
-from sqlitecache.cache import CacheSettings, DiskStorage, LFUCache, LRUCache
+from sqlitecache.cache import (
+    CacheSettings,
+    DiskStorage,
+    HybridCache,
+    LFUCache,
+    LRUCache,
+)
 
 
 @pytest.fixture
@@ -21,15 +27,35 @@ def cache_settings(max_size) -> CacheSettings:
 
 
 @pytest.fixture
-def lru_cache(disk_storage, cache_settings, tmp_path_factory) -> LRUCache:
-    file = tmp_path_factory.mktemp("data") / "test.db"
-    return LRUCache(db=file, storage=disk_storage, settings=cache_settings)
+def db(tmp_path_factory):
+    return tmp_path_factory.mktemp("data") / "test.db"
 
 
 @pytest.fixture
-def lfu_cache(disk_storage, cache_settings, tmp_path_factory) -> LFUCache:
-    file = tmp_path_factory.mktemp("data") / "test.db"
-    return LFUCache(db=file, storage=disk_storage, settings=cache_settings)
+def lru_cache(disk_storage, cache_settings, db) -> LRUCache:
+    return LRUCache(db=db, storage=disk_storage, settings=cache_settings)
+
+
+@pytest.fixture
+def lfu_cache(disk_storage, cache_settings, db) -> LFUCache:
+    return LFUCache(db=db, storage=disk_storage, settings=cache_settings)
+
+
+@pytest.fixture
+def ttl() -> int:
+    return 10
+
+
+@pytest.fixture
+def treshold() -> int:
+    return 5
+
+
+@pytest.fixture
+def hybrid_cache(lru_cache, lfu_cache, ttl, treshold):
+    return HybridCache(
+        ttl=ttl, treshold=treshold, lru_cache=lru_cache, lfu_cache=lfu_cache
+    )
 
 
 class TestLRUCache:
@@ -81,3 +107,9 @@ class TestLFUCache:
         # this will cause an eviction of the LFU key, which should be key4
         put_and_get("key5", "value5")
         assert lfu_cache.get("key4") is None
+
+
+class TestHybridCache:
+    def test_hybrid_put(self, hybrid_cache):
+        hybrid_cache.put("key", "value")
+        assert hybrid_cache.get("key") == "value"
