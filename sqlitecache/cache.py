@@ -93,6 +93,11 @@ class Cache(ABC):
     def exists(key: Hashable) -> bool:
         pass
 
+    @abstractmethod
+    def get_rates(self) -> Tuple[float, float]:
+        """Get the hit and miss rates of the cache."""
+        pass
+
 
 @define(frozen=False)
 class DiskStorage:
@@ -137,8 +142,6 @@ class CacheSettings:
 @define
 class BaseCache(Cache):
     db: str
-    storage: DiskStorage
-    settings: CacheSettings
 
     @contextmanager
     def connection(self) -> Generator[sqlite3.Connection, None, None]:
@@ -174,6 +177,9 @@ def auto_hash_key(func):
 
 @define
 class FunctionalCache(BaseCache):
+    storage: DiskStorage
+    settings: CacheSettings
+
     @property
     @abstractmethod
     def size_table(self) -> str:
@@ -246,6 +252,70 @@ class FunctionalCache(BaseCache):
                 """,
                 ("max_size", self.settings.max_size_in_bytes),
             )
+            # Let's also add tracking for hit and miss rates.
+            con.execute(
+                f"""
+                INSERT INTO {self.metadata_table} (setting, value)
+                VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
+                """,
+                ("hit_rate", 0),
+            )
+            con.execute(
+                f"""
+                INSERT INTO {self.metadata_table} (setting, value)
+                VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
+                """,
+                ("miss_rate", 0),
+            )
+
+    def _update_hit_rate(self, hit: bool):
+        """
+        Update the hit rate in the metadata table.
+        Arguments:
+            hit: A boolean indicating whether the cache hit or miss.
+        """
+        with self.commit_connection() as con:
+            if hit:
+                con.execute(
+                    f"""
+                    UPDATE {self.metadata_table}
+                    SET value = value + 1
+                    WHERE setting = 'hit_rate'
+                    """
+                )
+            else:
+                con.execute(
+                    f"""
+                    UPDATE {self.metadata_table}
+                    SET value = value + 1
+                    WHERE setting = 'miss_rate'
+                    """
+                )
+
+    def get_rates(self) -> Tuple[float, float]:
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'hit_rate'
+                """
+            )
+            hit_rate: int = int(cursor.fetchone()[0])
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'miss_rate'
+                """
+            )
+            miss_rate: int = int(cursor.fetchone()[0])
+            total_requests = hit_rate + miss_rate
+            if total_requests == 0:
+                return 0.0, 0.0
+            return hit_rate / total_requests, miss_rate / total_requests
 
     def fits(self, size: int) -> bool:
         with self.cursor() as cursor:
@@ -382,7 +452,10 @@ class LRUCache(FunctionalCache):
     @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
         if not self.exists(key):
+            self._update_hit_rate(hit=False)
             return default
+
+        self._update_hit_rate(hit=True)
         filename = self._get_filename_for_key(key)
         with self.commit_connection() as cursor:
             now = pendulum.now().timestamp()
@@ -539,7 +612,9 @@ class LFUCache(FunctionalCache):
     @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
         if not self.exists(key):
+            self._update_hit_rate(hit=False)
             return default
+        self._update_hit_rate(hit=True)
         filename = self._get_filename_for_key(key)
         with self.commit_connection() as cursor:
             cursor.execute(
@@ -637,7 +712,7 @@ class LFUCache(FunctionalCache):
 
 
 @define
-class HybridCache(Cache):
+class HybridCache(BaseCache):
     """A hybrid cache that uses both an LRU and LFU cache.
     Based on: https://ieeexplore.ieee.org/document/10454976
     """
@@ -648,6 +723,81 @@ class HybridCache(Cache):
     lfu_cache: LFUCache
     counter: Counter = field(factory=Counter)
 
+    def __attrs_post_init__(self):
+        # Initialize a table to keep track of the hit and miss rates.
+        with self.commit_connection() as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS HybridCacheMetadata (
+                    setting TEXT NOT NULL UNIQUE,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO HybridCacheMetadata (setting, value)
+                VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
+                """,
+                ("hit_rate", 0),
+            )
+            con.execute(
+                """
+                INSERT INTO HybridCacheMetadata (setting, value)
+                VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
+                """,
+                ("miss_rate", 0),
+            )
+
+    def _update_hit_rate(self, hit: bool):
+        """
+        Update the hit rate in the metadata table.
+        Arguments:
+            hit: A boolean indicating whether the cache hit or miss.
+        """
+        with self.commit_connection() as con:
+            if hit:
+                con.execute(
+                    """
+                    UPDATE HybridCacheMetadata
+                    SET value = value + 1
+                    WHERE setting = 'hit_rate'
+                    """
+                )
+            else:
+                con.execute(
+                    """
+                    UPDATE HybridCacheMetadata
+                    SET value = value + 1
+                    WHERE setting = 'miss_rate'
+                    """
+                )
+
+    def get_rates(self) -> Tuple[float, float]:
+        with self.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT value
+                FROM HybridCacheMetadata
+                WHERE setting = 'hit_rate'
+                """
+            )
+            hit_rate: int = int(cursor.fetchone()[0])
+            cursor.execute(
+                """
+                SELECT value
+                FROM HybridCacheMetadata
+                WHERE setting = 'miss_rate'
+                """
+            )
+            miss_rate: int = int(cursor.fetchone()[0])
+            total_requests = hit_rate + miss_rate
+            if total_requests == 0:
+                return 0.0, 0.0
+            return hit_rate / total_requests, miss_rate / total_requests
+
     @auto_hash_key
     def put(self, key: Hashable, value: Any):
         # LRU's cache put handles evictions by least recently used already
@@ -656,18 +806,26 @@ class HybridCache(Cache):
 
     @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
+        value_to_return = None
         if self.lru_cache.exists(key):
             self.counter[key] += 1
             value = self.lru_cache.get(key)
             if self.counter[key] >= self.treshold:
                 self.move_element_to_lfu(key, value)
-            return value
+            value_to_return = value
         elif self.lfu_cache.exists(key):
             self.lfu_cache.reset_ttl(key, self.ttl)
-            return self.lfu_cache.get(key)
+            value_to_return = self.lfu_cache.get(key)
         # TODO: Different from the paper, we treat gets as plain lookups
         # without any side effects.
-        return default
+        if value_to_return is not None:
+            self._update_hit_rate(hit=True)
+            return value_to_return
+        else:
+            # If we are here, it means that the element was not found in either cache.
+            # We should update the miss rate.
+            self._update_hit_rate(hit=False)
+            return default
 
     @auto_hash_key
     def move_element_to_lfu(self, key: Hashable, value: Any):

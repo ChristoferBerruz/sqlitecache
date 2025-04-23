@@ -52,9 +52,9 @@ def treshold() -> int:
 
 
 @pytest.fixture
-def hybrid_cache(lru_cache, lfu_cache, ttl, treshold):
+def hybrid_cache(lru_cache, lfu_cache, ttl, treshold, db):
     return HybridCache(
-        ttl=ttl, treshold=treshold, lru_cache=lru_cache, lfu_cache=lfu_cache
+        db=db, ttl=ttl, treshold=treshold, lru_cache=lru_cache, lfu_cache=lfu_cache
     )
 
 
@@ -82,6 +82,14 @@ class TestLRUCache:
         # Simulate the cache being closed and reopened
         new_lru_cache = LRUCache(db=db, storage=disk_storage, settings=cache_settings)
         assert new_lru_cache.get("key1") == "value1"
+
+    def test_get_rates(self, lru_cache: LRUCache):
+        lru_cache.put("key1", "value1")
+        lru_cache.get("key1")
+        lru_cache.get("key2")
+        hit_rate, miss_rate = lru_cache.get_rates()
+        pytest.approx(hit_rate, 0.5)
+        pytest.approx(miss_rate, 0.5)
 
 
 class TestLFUCache:
@@ -119,6 +127,14 @@ class TestLFUCache:
         # Simulate the cache being closed and reopened
         new_lfu_cache = LFUCache(db=db, storage=disk_storage, settings=cache_settings)
         assert new_lfu_cache.get("key1") == "value1"
+
+    def test_get_rates(self, lfu_cache: LFUCache):
+        lfu_cache.put("key1", "value1")
+        lfu_cache.get("key1")
+        lfu_cache.get("key2")
+        hit_rate, miss_rate = lfu_cache.get_rates()
+        pytest.approx(hit_rate, 0.5)
+        pytest.approx(miss_rate, 0.5)
 
 
 class TestHybridCache:
