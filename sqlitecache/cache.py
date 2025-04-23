@@ -227,11 +227,14 @@ class FunctionalCache(BaseCache):
             )
 
     def _set_settings(self):
+        # To set the settings, first double check that the settings exists.
+        # Let's use ON CONFLICT to avoid duplicates by simply ignoring the request.
         with self.commit_connection() as con:
             con.execute(
                 f"""
                 INSERT INTO {self.metadata_table} (setting, value)
                 VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
                 """,
                 ("current_size", 0),
             )
@@ -239,6 +242,7 @@ class FunctionalCache(BaseCache):
                 f"""
                 INSERT INTO {self.metadata_table} (setting, value)
                 VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
                 """,
                 ("max_size", self.settings.max_size_in_bytes),
             )

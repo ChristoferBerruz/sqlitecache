@@ -77,6 +77,12 @@ class TestLRUCache:
         put_and_get("key5", "value5")
         assert lru_cache.get("key1") is None
 
+    def test_persistance(self, lru_cache: LRUCache, disk_storage, cache_settings, db):
+        lru_cache.put("key1", "value1")
+        # Simulate the cache being closed and reopened
+        new_lru_cache = LRUCache(db=db, storage=disk_storage, settings=cache_settings)
+        assert new_lru_cache.get("key1") == "value1"
+
 
 class TestLFUCache:
     def test_lfu_put(self, lfu_cache: LFUCache):
@@ -107,6 +113,12 @@ class TestLFUCache:
         # this will cause an eviction of the LFU key, which should be key4
         put_and_get("key5", "value5")
         assert lfu_cache.get("key4") is None
+
+    def test_persistance(self, lfu_cache: LFUCache, disk_storage, cache_settings, db):
+        lfu_cache.put("key1", "value1")
+        # Simulate the cache being closed and reopened
+        new_lfu_cache = LFUCache(db=db, storage=disk_storage, settings=cache_settings)
+        assert new_lfu_cache.get("key1") == "value1"
 
 
 class TestHybridCache:
