@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 
@@ -8,6 +9,7 @@ from sqlitecache.cache import (
     HybridCache,
     LFUCache,
     LRUCache,
+    TTLSettings,
 )
 
 
@@ -135,6 +137,31 @@ class TestLFUCache:
         hit_rate, miss_rate = lfu_cache.get_rates()
         pytest.approx(hit_rate, 0.5)
         pytest.approx(miss_rate, 0.5)
+
+    @pytest.mark.slow
+    def test_lfu_eviction_with_ttl(self, db, disk_storage, cache_settings):
+        ttl_settings = TTLSettings(use_ttl=True, default_ttl=1)
+        cache = LFUCache(
+            db=db,
+            storage=disk_storage,
+            settings=cache_settings,
+            ttl_settings=ttl_settings,
+        )
+
+        def put_and_get(key, value):
+            cache.put(key, value)
+            _cache_val = cache.get(key)
+            assert _cache_val == value
+
+        put_and_get("key1", "value1")
+        put_and_get("key2", "value2")
+        put_and_get("key3", "value3")
+        put_and_get("key4", "value4")
+        put_and_get("key4", "value5")
+        # sleep as to make time pass
+        time.sleep(3)
+        put_and_get("key5", "value5")  # key5 triggers evictions
+        assert cache.get("key1") is None
 
 
 class TestHybridCache:

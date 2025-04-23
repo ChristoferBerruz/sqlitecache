@@ -541,22 +541,85 @@ class LRUCache(FunctionalCache):
 
 
 @define
+class TTLSettings:
+    use_ttl: bool = False
+    default_ttl: int = 0
+
+    def __attrs_post_init__(self):
+        if self.use_ttl and self.default_ttl <= 0:
+            raise ValueError("TTL must be greater than 0 if use_ttl is True.")
+
+
+@define
 class LFUCache(FunctionalCache):
+    ttl_settings: Optional[TTLSettings] = None
+
     def __attrs_post_init__(self):
         self._create_cache_table_and_metadata()
 
+    def _set_settings(self):
+        # Run the parent's settings, which basically sets all the "shared" settings.
+        super()._set_settings()
+        # Now set the TTL settings.
+        if self.ttl_settings is not None:
+            with self.commit_connection() as con:
+                con.execute(
+                    f"""
+                    INSERT INTO {self.metadata_table} (setting, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(setting) DO NOTHING
+                    """,
+                    ("use_ttl", int(self.ttl_settings.use_ttl)),
+                )
+                con.execute(
+                    f"""
+                    INSERT INTO {self.metadata_table} (setting, value)
+                    VALUES (?, ?)
+                    ON CONFLICT(setting) DO NOTHING
+                    """,
+                    ("default_ttl", self.ttl_settings.default_ttl),
+                )
+
     @auto_hash_key
     def put(self, key: Hashable, value: Any, ttl: Optional[int] = None) -> HashedKey:
+        # By doing this, we are allowing user to insert a ttl value into the
+        # cache but it will not be used if the cache is not configured to use it.
+        _ttl = ttl or self.ttl_settings.default_ttl if self.ttl_settings else ttl
         predicted_size = self.storage.predict_size(value)
         if not self.exists(key):
             self._evict_until_satified(predicted_size)
-            return self._put_new(key, value, ttl)
+            return self._put_new(key, value, _ttl)
         else:
             current_size = self._get_size_for_key(key)
             self._evict_until_satified(predicted_size - current_size)
-            return self._put_update(key, value, ttl)
+            return self._put_update(key, value, _ttl)
 
     def _evict_until_satified(self, size: int):
+        if self.ttl_settings is not None and self.ttl_settings.use_ttl:
+            self._evict_until_satified_ttl(size)
+        else:
+            self._evict_until_satified_countbased(size)
+
+    def _evict_until_satified_ttl(self, size: int):
+        # If we are using TTL, we need to evict the elements that are expired.
+        if self.ttl_settings is not None and self.ttl_settings.use_ttl:
+            with self.commit_connection() as cursor:
+                now = pendulum.now().timestamp()
+                # an element is considered to be expired if the current time is greater
+                # than the stored_at + ttl
+                cursor.execute(
+                    f"""
+                    DELETE FROM {self.cache_table}
+                    WHERE stored_at + ttl < ?
+                    """,
+                    (now,),
+                )
+        # after deleting everything that was expired, we might still not have enough space.
+        # fall back onto the count based eviction policy. Otherwise, the user will
+        # have to wait until the TTL expires - which can be a looong time.
+        self._evict_until_satified_countbased(size)
+
+    def _evict_until_satified_countbased(self, size: int):
         while not self.fits(size):
             # Evict the least frequently used element.
             # TODO: Consider handling breaking ties.
