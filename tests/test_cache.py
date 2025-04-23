@@ -93,7 +93,7 @@ class TestLRUCache:
         lru_cache.put("key1", "value1")
         lru_cache.get("key1")
         lru_cache.get("key2")
-        hit_rate, miss_rate = lru_cache.get_rates()
+        hit_rate, miss_rate, *_ = lru_cache.get_rates()
         pytest.approx(hit_rate, 0.5)
         pytest.approx(miss_rate, 0.5)
 
@@ -138,7 +138,7 @@ class TestLFUCache:
         lfu_cache.put("key1", "value1")
         lfu_cache.get("key1")
         lfu_cache.get("key2")
-        hit_rate, miss_rate = lfu_cache.get_rates()
+        hit_rate, miss_rate, *_ = lfu_cache.get_rates()
         pytest.approx(hit_rate, 0.5)
         pytest.approx(miss_rate, 0.5)
 
@@ -209,16 +209,17 @@ class TestSimulation:
             raise ValueError("Invalid cache type")
         yield _cache
         # collection of stats
-        hit_rate, miss_rate = _cache.get_rates()
+        hit_rate, miss_rate, total = _cache.get_rates()
         recorder[request.param].append(
             {
                 "size": p if request.param == "lru_cache" else q,
                 "n_requests": n_requests,
                 "hit_rate": hit_rate,
                 "miss_rate": miss_rate,
+                "total": total,
             }
         )
-        print(f"Hit rate: {hit_rate}, Miss rate: {miss_rate}")
+        print(f"Hit rate: {hit_rate}, Miss rate: {miss_rate}, Total: {total}")
 
     @pytest.mark.parametrize("p", p_values, ids=p_ids)
     @pytest.mark.parametrize("q", q_values, ids=q_ids)

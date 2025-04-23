@@ -94,7 +94,7 @@ class Cache(ABC):
         pass
 
     @abstractmethod
-    def get_rates(self) -> Tuple[float, float]:
+    def get_rates(self) -> Tuple[float, float, int]:
         """Get the hit and miss rates of the cache."""
         pass
 
@@ -294,7 +294,7 @@ class FunctionalCache(BaseCache):
                     """
                 )
 
-    def get_rates(self) -> Tuple[float, float]:
+    def get_rates(self) -> Tuple[float, float, int]:
         with self.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -315,7 +315,7 @@ class FunctionalCache(BaseCache):
             total_requests = hit_rate + miss_rate
             if total_requests == 0:
                 return 0.0, 0.0
-            return hit_rate / total_requests, miss_rate / total_requests
+            return hit_rate / total_requests, miss_rate / total_requests, total_requests
 
     def fits(self, size: int) -> bool:
         with self.cursor() as cursor:
@@ -838,7 +838,7 @@ class HybridCache(BaseCache):
                     """
                 )
 
-    def get_rates(self) -> Tuple[float, float]:
+    def get_rates(self) -> Tuple[float, float, int]:
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -859,7 +859,7 @@ class HybridCache(BaseCache):
             total_requests = hit_rate + miss_rate
             if total_requests == 0:
                 return 0.0, 0.0
-            return hit_rate / total_requests, miss_rate / total_requests
+            return hit_rate / total_requests, miss_rate / total_requests, total_requests
 
     @auto_hash_key
     def put(self, key: Hashable, value: Any):
