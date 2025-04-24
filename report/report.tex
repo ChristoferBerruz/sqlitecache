@@ -73,8 +73,7 @@ described in \cite{shah2023ImprovedCacheEviction}.
 
 Our key design goals of this project are:
 \begin{itemize}
-    \item \textbf{Single-threaded}: The cache should be
-        single-threaded to simplify the design and avoid concurrency issues.
+    \item \textbf{Single-Threaded}: The cache should be single-threaded to simplify the design and avoid concurrency issues.
     \item \textbf{Persistent}: The cache should persist data to disk using SQLite, allowing for data recovery after a crash.
     \item \textbf{High capacity}: The cache should be able to store a large amount of data efficiently.
     \item \textbf{Eviction policies}: The cache should support LRU, LFU, and a hybrid policy for eviction.
@@ -138,7 +137,7 @@ and Figure \ref{fig:real_caches_uml_diagram}.
         \end{class}
 
         % Derived classes
-        \begin{class}[text width=6cm]{BaseCache}{0, -12}
+        \begin{class}[text width=4cm]{BaseCache}{0, -12}
             \inherit{Cache}
             \operation{+ connection(): sqlite3.Connection}
             \operation{+ commit\_connection(): sqlite3.Connection}
@@ -178,7 +177,7 @@ and Figure \ref{fig:real_caches_uml_diagram}.
         \end{class}
 
         % BaseCache
-        \begin{class}[text width=6cm]{BaseCache}{0, -19}
+        \begin{class}[text width=4cm]{BaseCache}{0, -19}
             \operation{+ connection(): sqlite3.Connection}
             \operation{+ commit\_connection(): sqlite3.Connection}
             \operation{+ cursor(): sqlite3.Cursor}
@@ -233,7 +232,7 @@ The functionality between LRUCache and LFUCache
 is similar, creating the inheritance relationship described in Figure \ref{fig:real_caches_uml_diagram}.
 Furthermore, one design choice is that each cache class has its own cache table $(C)$,
 metadata table $(M)$, and size table $(S)$.
-This is achieved by each relation having a preffix
+This is achieved by each relation having a prefix
 that is the name of the cache class. As a result, it is possible to have
 one cache of each type in the same SQLite database. This is extremely useful
 for testing and debugging the HybridCache class,
