@@ -40,7 +40,7 @@ The abstract goes here. It should summarize the key points of your paper in abou
 Keyword1, Keyword2, Keyword3, Keyword4
 \end{IEEEkeywords}
 
-\newcommand{\sqlitecache}{\mbox{\tt sqlitecache\tt}}
+\newcommand{\sqlitecache}{\texttt{sqlitecache}}
 \section{Introduction}
 % Project goals and motivation
 % Description of Database systems challenge addressed
@@ -223,7 +223,7 @@ the DiskStorage object creates a unique
 filename, $f_{name}$, using the \texttt{uuid} library.
 Then, DiskStorage saves $v_b'$ into the filepath $dir/f_{name}$ where $dir$ is the directory
 used to initialize the DiskStorage object. Finally, DiskStorage sends the full filepath
-back to the database and the database stores the (key, filepath) pair in the cache table.
+back to the database and the database stores the $(k', dir/f_{name})$ pair in the cache table.
 
 Note that depending on the eviction policy of the cache, extra information
 is inserted into the cache table. These differences are described in
@@ -231,8 +231,9 @@ Section \ref{sec:lru} and Section \ref{sec:lfu}.
 
 The functionality between LRUCache and LFUCache
 is similar, creating the inheritance relationship described in Figure \ref{fig:real_caches_uml_diagram}.
-Furthermore, one design choice is that each cache class has its own cache table,
-metadata table, and size table. This is achieved by each relation having a suffix
+Furthermore, one design choice is that each cache class has its own cache table $(C)$,
+metadata table $(M)$, and size table $(S)$.
+This is achieved by each relation having a preffix
 that is the name of the cache class. As a result, it is possible to have
 one cache of each type in the same SQLite database. This is extremely useful
 for testing and debugging the HybridCache class,
@@ -244,7 +245,73 @@ as its backing caches.
     one cache instance per SQLite database.
 \end{tcolorbox}
 
-% create a note using the 
+\subsubsection{Size}
+Both LRUCache and LFUCache have a notion of capacity. We define capacity
+as the maximum number of bytes allocated for the \textit{values} in the cache.
+Let $v$ be the value to be inserted into the cache, $v_b'$
+the final binary representation of $v$ after compression and encryption,
+and $s_v$ the size of $v_b'$ in bytes.
+Let $s_{max}$ be the maximum size
+of the cache in bytes, and $s_{used}$ be the size of the cache in bytes. Assuming
+there are $N$ elements stored in the cache, we define the current size of the cache
+as $$ s_{used} = \sum_{i=1}^{N} s_{v_i}$$
+where $s_{v_i}$ is the size of the $i$-th value in the cache.
+
+\subsubsection{Size Tracking}
+To efficiently know whether or not a new value $v$ can be inserted into the cache,
+it is important to keep track of $s_{used}$. To do so, we use the size table $(S)$,
+to store the current size of the cache. To always keep the size table up to date,
+we use several triggers whenever new values are inserted, deleted, or
+updated in the cache table $(C)$. In concrete, we have the following triggers:
+\begin{itemize}
+    \item \texttt{insert\_S}: This trigger is called whenever a new value $v$
+        is inserted into the cache table $(C)$. $$s_{used} = s_{used} + s_v$$.
+    \item \texttt{delete\_S}: This trigger is called whenever a value
+        is deleted from the cache table $(C)$.
+        $$s_{used} = s_{used} - s_v$$.
+    \item \texttt{update\_S}: This trigger is called whenever a value
+        is updated in the cache table $(C)$.
+        $$s_{used} = s_{used} - s_{v_{old}} + s_v$$
+        where $s_{v_{old}}$ is the size of the old value.
+\end{itemize}
+
+% Eviction Policy Subsubsection
+\subsubsection{Eviction Policy}
+Assume that a new value $v$ is requested to be inserted into the cache.
+If $s_{used} + s_v > s_{max}$, then the cache must evict elements
+until $s_{used} + s_v \leq s_{max}$. The eviction policy is cache dependent.
+Refer to sections \ref{sec:lru} and \ref{sec:lfu} for more details.
+
+\subsubsection{Persistency}
+One main goal of this project is to have a cache that is \textit{persistent}.
+We define persistency as the ability to recover the cache
+after a crash or a power failure. In practice, this means the following.
+Let $D$ and $DB$ be the directory and SQLite database used to initialize
+the cache $X$. Assuming we store $(k, v)$ into $X$ and the program crashes,
+it possible to initialize a new instance $X'$ of the same cache $X$ using the same
+directory $D$ and database $DB$. Then, doing $X'.get(k)$ should return $v$.
+
+\begin{tcolorbox}[colback=blue!5!white, colframe=blue!75!black, title=Note]
+    It is theoretically possible to have two caches $X$ and $Y$ pointing
+    to the same persistency $D$ and $DB$. However, this is not recommended
+    because it can lead to data corruption and undefined behavior.
+    Recall that \sqlitecache~is a single-threaded cache.
+\end{tcolorbox}
+
+\subsubsection{Settings \& Recovery}
+Assume that you want to reconnect to a cache $X$ that was previously
+created using the same directory $D$ and database $DB$. To do so, you can
+create a new instance $X'$ using the same directory and database.
+
+Recall that our cache has three possible settings: maximum size, encryption, and compression.
+
+The cache $X'$ will automatically detect these settings and use them. As a result,
+if a developer creates $X'$ using a different set of settings, the cache will
+ignore them. All settings are unique and stored
+in the metadata table $(M)$. This behavior is enforced by the UNIQUE
+constraint in the metadata table $(M)$ and inserting
+the settings using the \texttt{ON CONFLICT DO NOTHING} clause.
+
 \subsection{LRUCache\label{sec:lru}}
 \subsection{LFUCache\label{sec:lfu}}
 
