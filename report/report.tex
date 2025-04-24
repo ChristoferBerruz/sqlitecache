@@ -7,7 +7,12 @@
 \usepackage{algorithmic}
 \usepackage{textcomp}
 \usepackage{xcolor}
+\usepackage{tikz-uml}
 \usepackage{tikz}
+% Import order between tikz-uml and pgf-umlcd
+% matters: https://tex.stackexchange.com/questions/130124/crash-of-tikz-uml-and-pgf-umlcd
+\let\umlnotetikzuml\umlnote
+\let\umlnote\relax
 \usepackage{pgf-umlcd}
 \usepackage{tcolorbox}
 \usepackage{hyperref}
