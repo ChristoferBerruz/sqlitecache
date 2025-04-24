@@ -10,6 +10,7 @@
 \usepackage{tikz}
 \usepackage{pgf-umlcd}
 \usepackage{tcolorbox}
+\usepackage{hyperref}
 
 % Title and Author
 \title{SQLiteCache: A single-threaded, persistent, and high capacity key-value cache using SQLite}
@@ -293,8 +294,7 @@ directory $D$ and database $DB$. Then, doing $X'.get(k)$ should return $v$.
 \begin{tcolorbox}[colback=blue!5!white, colframe=blue!75!black, title=Note]
     It is theoretically possible to have two caches $X$ and $Y$ pointing
     to the same persistency $D$ and $DB$. However, this is not recommended
-    because it can lead to data corruption and undefined behavior.
-    Recall that \sqlitecache~is a single-threaded cache.
+    because \sqlitecache~is a single-threaded cache.
 \end{tcolorbox}
 
 \subsubsection{Settings \& Recovery}
@@ -315,6 +315,15 @@ the settings using the \texttt{ON CONFLICT DO NOTHING} clause.
 \subsection{LFUCache\label{sec:lfu}}
 
 \subsection{DiskStorage}
+
+\subsection{Testing}
+All the functionality of the \sqlitecache~package is \textbf{functionally} tested using
+the \texttt{pytest} framework. The tests are located inside the \texttt{tests} directory.
+
+We selected the pytest framework because it is the most popular testing framework
+for Python. Furthermore, the isolation and lifecycle of the tests and fixtures
+are well defined. This allows us to have a clean and isolated environment
+for each test.
 
 \subsection{Simulation\label{sec:simulation}}
 
