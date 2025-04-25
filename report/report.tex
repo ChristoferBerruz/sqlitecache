@@ -93,6 +93,7 @@ Our persistent cache is available as a pip installable package,
 \sqlitecache, that
 can be used for any Python application.
 The overall design of the architecture is shown in Figure \ref{fig:architecture}.
+Figure \ref{fig:use_case_diagram} shows the use case diagram of the package.
 
 As part of this project, we also include a simulation 
 comparing the hit rate
@@ -103,6 +104,23 @@ while the cache in \cite{shah2023ImprovedCacheEviction} is memory based and not 
 Additionally, the authors in \cite{shah2023ImprovedCacheEviction} use an element-oriented
 cache while we use a key-value cache. More details on the simulation
 are provided in Section \ref{sec:simulation}.
+
+% UML case diagram from the user perspective.
+\begin{figure}
+    \begin{tikzpicture}
+        \umlactor{User}
+        \begin{umlsystem}[x=4, y=0, fill=green!10]{SQLiteCache}
+            \umlusecase[x=0, y=0]{Puts (k, v)}
+            \umlusecase[x=0, y=-2]{Gets (k)}
+            \umlusecase[x=0, y=-4]{Deletes (k)}
+        \end{umlsystem}
+        \umlassoc{User}{usecase-1}
+        \umlassoc{User}{usecase-2}
+        \umlassoc{User}{usecase-3}
+    \end{tikzpicture}
+    \caption{Use case diagram of the SQLiteCache package.}
+    \label{fig:use_case_diagram}
+\end{figure}
 
 % Overall architecture
 \begin{figure}[ht]
