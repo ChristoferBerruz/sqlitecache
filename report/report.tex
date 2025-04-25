@@ -9,13 +9,13 @@
 \usepackage{xcolor}
 \usepackage{tikz-uml}
 \usepackage{tikz}
-% Import order between tikz-uml and pgf-umlcd
-% matters: https://tex.stackexchange.com/questions/130124/crash-of-tikz-uml-and-pgf-umlcd
-\let\umlnotetikzuml\umlnote
-\let\umlnote\relax
-\usepackage{pgf-umlcd}
 \usepackage{tcolorbox}
 \usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=black,
+}
 
 % Title and Author
 \title{SQLiteCache: A single-threaded, persistent, and high capacity key-value cache using SQLite}
@@ -127,81 +127,84 @@ elements in the HybridCache are stored in either LRUCache or LFUCache, but not b
 The entire inheritance hierarchy is shown in Figure \ref{fig:base_cache_uml_diagram}
 and Figure \ref{fig:real_caches_uml_diagram}.
 
-
 % UML inheritance diagram of the base classes
 \begin{figure}
     \centering
-    \begin{tikzpicture}[scale=0.45]
+    \begin{tikzpicture}[scale=0.8]
         % Base class
-        \begin{class}[text width=6cm]{Cache}{0, 0}
-            \operation{+ put(key: Hashable, value: Any): HashedKey}
-            \operation{+ get(key: Hashable, default: Any): Any}
-            \operation{+ delete(key: Hashable)}
-            \operation{+ fits(size: int): bool}
-            \operation{+ exists(key: Hashable): bool}
-            \operation{+ get\_rates(): Tuple[float, float, int]}
-        \end{class}
+        \umlclass[type=abstract, x=0, y=0]{Cache}{
+            + put(key: Hashable, value: Any): HashedKey \\
+            + get(key: Hashable, default: Any): Any \\
+            + delete(key: Hashable) \\
+            + fits(size: int): bool \\
+            + exists(key: Hashable): bool \\
+            + get\_rates(): Tuple[float, float, int]
+        }{}
 
         % Derived classes
-        \begin{class}[text width=4cm]{BaseCache}{0, -12}
-            \inherit{Cache}
-            \operation{+ connection(): sqlite3.Connection}
-            \operation{+ commit\_connection(): sqlite3.Connection}
-            \operation{+ cursor(): sqlite3.Cursor}
-        \end{class}
+        \umlclass[x=0, y=-5]{BaseCache}{
+            + connection(): sqlite3.Connection \\
+            + commit\_connection(): sqlite3.Connection \\
+            + cursor(): sqlite3.Cursor
+        }{}
 
         % FunctionalCache
-        \begin{class}[text width=6cm]{FunctionalCache}{0, -20}
-            \inherit{BaseCache}
-            \attribute{+ size\_table: str}
-            \attribute{+ cache\_table: str}
-            \attribute{+ metadata\_table: str}
-        \end{class}
+        \umlclass[x=0, y=-9]{FunctionalCache}{
+            + size\_table: str \\
+            + cache\_table: str \\
+            + metadata\_table: str
+        }{}
+
+        % Relationships
+        \umlinherit{BaseCache}{Cache}
+        \umlinherit{FunctionalCache}{BaseCache}
     \end{tikzpicture}
     \caption{UML class diagram of the base cache classes.}
     \label{fig:base_cache_uml_diagram}
 \end{figure}
 
-
 % UML inheritance diagram of the real cache classes (LRUCache, LFUCache, HybridCache)
 \begin{figure}
     \centering
-    \begin{tikzpicture}[scale=0.45]
+    \begin{tikzpicture}[scale=0.8]
         % FunctionalCache
-        \begin{class}[text width=5cm]{FunctionalCache}{0, 0}
-            \attribute{+ size\_table: str}
-            \attribute{+ cache\_table: str}
-            \attribute{+ metadata\_table: str}
-        \end{class}
+        \umlclass[x=0, y=0]{FunctionalCache}{
+            + size\_table: str \\
+            + cache\_table: str \\
+            + metadata\_table: str
+        }{}
+
         % LRUCache and LFUCache
-        \begin{class}[text width=4cm]{LRUCache}{-4, -8}
-            \inherit{FunctionalCache}
-        \end{class}
+        \umlclass[x=-4, y=-3.5]{LRUCache}{
+            % No additional attributes or methods
+        }{}
 
-        \begin{class}[text width=4cm]{LFUCache}{5, -8}
-            \inherit{FunctionalCache}
-        \end{class}
-
-        % BaseCache
-        \begin{class}[text width=4cm]{BaseCache}{0, -19}
-            \operation{+ connection(): sqlite3.Connection}
-            \operation{+ commit\_connection(): sqlite3.Connection}
-            \operation{+ cursor(): sqlite3.Cursor}
-        \end{class}
+        \umlclass[x=4, y=-3.5]{LFUCache}{
+            % No additional attributes or methods
+        }{}
 
         % HybridCache
-        \begin{class}[text width=6cm]{HybridCache}{0, -12}
-            \inherit{BaseCache}
-            \attribute{+ ttl: int}
-            \attribute{+ treshold: int}
-            \attribute{+ lru\_cache: LRUCache}
-            \attribute{+ lfu\_cache: LFUCache}
-        \end{class}
-        \composition {HybridCache}{}{}{LRUCache}
-        \composition {HybridCache}{}{}{LFUCache}
+        \umlclass[x=0, y=-7]{HybridCache}{
+            + ttl: int \\
+            + treshold: int \\
+            + lru\_cache: LRUCache \\
+            + lfu\_cache: LFUCache
+        }{}
+
+        \umlclass[x=0, y=-12]{BaseCache}{
+            + connection(): sqlite3.Connection \\
+            + commit\_connection(): sqlite3.Connection \\
+            + cursor(): sqlite3.Cursor
+        }{}
+
+        % Relationships
+        \umlinherit{LRUCache}{FunctionalCache}
+        \umlinherit{LFUCache}{FunctionalCache}
+        \umlinherit{HybridCache}{BaseCache}
+        \umlcompo[mult1=1, mult2=1]{HybridCache}{LRUCache}
+        \umlcompo[mult1=1, mult2=1]{HybridCache}{LFUCache}
     \end{tikzpicture}
-    \caption{UML class diagram showing the relation of the three policy caches
-    and their relation to the base classes.}
+    \caption{UML class diagram showing the relation of the three policy caches and their relation to the base classes.}
     \label{fig:real_caches_uml_diagram}
 \end{figure}
 
