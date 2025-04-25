@@ -250,6 +250,7 @@ filename, $f_{name}$, using the \texttt{uuid} library.
 Then, DiskStorage saves $v_b'$ into the filepath $dir/f_{name}$ where $dir$ is the directory
 used to initialize the DiskStorage object. Finally, DiskStorage sends the full filepath
 back to the database and the database stores the $(k', dir/f_{name})$ pair in the cache table.
+This is sequence of actions is illustrated in Figure \ref{fig:put_sequence_diagram}.
 
 Note that depending on the eviction policy of the cache, extra information
 is inserted into the cache table. These differences are described in
@@ -270,6 +271,30 @@ as its backing caches.
     To avoid confusion and complexity, it is recommended to use
     one cache instance per SQLite database.
 \end{tcolorbox}
+
+% Sequence diagram for the put method
+\begin{figure}
+    \begin{tikzpicture}
+        \begin{umlseqdiag}
+            \umldatabase{db}
+            \umlobject{disk}
+            \begin{umlcall}[op=store $v$, return=$disk/f_{name}$]{db}{disk}
+                \begin{umlcallself}[op=compress, return=$v_c$]{disk}
+                \end{umlcallself}
+                \begin{umlcallself}[op=encrypt, return=$v_e$]{disk}
+                \end{umlcallself}
+                \begin{umlcallself}[op=create filename, return=$f_{name}$]{disk}
+                \end{umlcallself}
+                \begin{umlcallself}[op=pickle, return=$v_b$]{disk}
+                \end{umlcallself}
+                \begin{umlcallself}[op=write, return=$disk/f_{name}$]{disk}
+                \end{umlcallself}
+            \end{umlcall}
+        \end{umlseqdiag}
+    \end{tikzpicture}
+    \label{fig:put_sequence_diagram}
+    \caption{Sequence diagram for the put method.}
+\end{figure}
 
 \subsubsection{Size}
 Both LRUCache and LFUCache have a notion of capacity. We define capacity
