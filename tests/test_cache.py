@@ -1,18 +1,25 @@
 import os
-
+import shutil
+import tempfile
 import pytest
 
 from sqlitecache.cache import CacheSettings, DiskStorage, LFUCache, LRUCache
+from cryptography.fernet import Fernet
+
+
+@pytest.fixture(scope="session")
+def encryption_key():
+    return Fernet.generate_key()
 
 
 @pytest.fixture
-def disk_storage(tmpdir) -> DiskStorage:
-    return DiskStorage(tmpdir)
+def disk_storage(tmpdir, encryption_key) -> DiskStorage:
+    return DiskStorage(tmpdir, encryption_key=encryption_key)
 
 
 @pytest.fixture
 def max_size() -> int:
-    return 100
+    return 200
 
 
 @pytest.fixture
@@ -34,8 +41,8 @@ def lfu_cache(disk_storage, cache_settings, tmp_path_factory) -> LFUCache:
 
 class TestLRUCache:
     def test_lru_put(self, lru_cache):
-        lru_cache.put("key", "value")
-        assert lru_cache.get("key") == "value"
+        lru_cache.put("key", "v1")
+        assert lru_cache.get("key") == "v1"
 
     def test_lru_eviction(self, lru_cache: LRUCache, disk_storage: DiskStorage, mocker):
         def put_and_get(key, value):
@@ -43,19 +50,19 @@ class TestLRUCache:
             _cache_val = lru_cache.get(key)
             assert _cache_val == value
 
-        put_and_get("key1", "value1")
-        put_and_get("key2", "value2")
-        put_and_get("key3", "value3")
-        put_and_get("key4", "value4")
-        put_and_get("key4", "value5")
-        put_and_get("key5", "value5")
+        put_and_get("key1", "v1")
+        put_and_get("key2", "v2")
+        put_and_get("key3", "v3")
+        put_and_get("key4", "v4")
+        put_and_get("key4", "v5")
+        put_and_get("key5", "v6")
         assert lru_cache.get("key1") is None
 
 
 class TestLFUCache:
     def test_lfu_put(self, lfu_cache: LFUCache):
-        lfu_cache.put("key", "value")
-        assert lfu_cache.get("key") == "value"
+        lfu_cache.put("key", "v1")
+        assert lfu_cache.get("key") == "v1"
 
     def test_lfu_eviction(self, lfu_cache: LFUCache, disk_storage: DiskStorage, mocker):
         key_to_hashed_key = {}

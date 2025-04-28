@@ -67,6 +67,11 @@ from typing import Any, Generator, Hashable, Optional, Tuple
 import pendulum
 from attrs import define
 
+import sqlite3
+import pickle
+import zlib
+from cryptography.fernet import Fernet
+
 HashedKey = int
 
 
@@ -96,25 +101,54 @@ class Cache(ABC):
 @define(frozen=False)
 class DiskStorage:
     storage_dir: str
+    encryption_key: Optional[bytes] = None
+    fernet: Optional[Fernet] = None
+
+    def __attrs_post_init__(self):
+        if self.encryption_key is None: 
+            self.encryption_key = Fernet.generate_key()
+        self.fernet = Fernet(self.encryption_key)
+
+    def _compress(self, data: bytes) -> bytes:
+        return zlib.compress(data)
+
+    def _decompress(self, data: bytes) -> bytes:
+        return zlib.decompress(data)
+
+    def _encrypt(self, data: bytes) -> bytes:
+        return self.fernet.encrypt(data)
+
+    def _decrypt(self, data: bytes) -> bytes:
+        return self.fernet.decrypt(data)
 
     def put(self, key: Hashable, value: Any) -> Tuple[str, int]:
         filename = f"{uuid.uuid4().hex}.cache"
         filepath = os.path.join(self.storage_dir, filename)
         with open(filepath, "wb") as f:
-            pickle.dump(value, f)
+            raw_data = pickle.dumps(value)
+            compressed = self._compress(raw_data)
+            encrypted = self._encrypt(compressed)
+            f.write(encrypted)
         return filename, os.path.getsize(filepath)
 
     def get(self, filename: str) -> Any:
         filepath = os.path.join(self.storage_dir, filename)
         with open(filepath, "rb") as f:
-            return pickle.load(f)
+            encrypted = f.read()
+            compressed = self._decrypt(encrypted)
+            raw_data = self._decompress(compressed)
+            value = pickle.loads(raw_data)
+            return value
 
     def delete(self, filename: str):
         filepath = os.path.join(self.storage_dir, filename)
         os.remove(filepath)
 
     def predict_size(self, value: Any) -> int:
-        return len(pickle.dumps(value))
+        raw_data = pickle.dumps(value)
+        compressed = self._compress(raw_data)
+        encrypted = self._encrypt(compressed)
+        return len(encrypted)
 
     @contextmanager
     def defer_delete(self, filename: str):
@@ -339,7 +373,10 @@ class LRUCache(FunctionalCache):
                     LIMIT 1
                     """
                 )
-                evict_key = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                if result is None:
+                    raise RuntimeError("Cannot fit item into cache even after evicting all entries.")
+                evict_key = result[0]
                 self.delete(evict_key)
 
     @auto_hash_key
@@ -491,7 +528,10 @@ class LFUCache(FunctionalCache):
                     LIMIT 1
                     """
                 )
-                evict_key = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                if result is None:
+                    raise RuntimeError("Cannot fit item into cache even after evicting all entries.")
+                evict_key = result[0]
                 self.delete(evict_key)
 
     @auto_hash_key
