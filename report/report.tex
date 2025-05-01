@@ -276,8 +276,8 @@ as its backing caches.
 \begin{figure}
     \begin{tikzpicture}
         \begin{umlseqdiag}
-            \umldatabase{db}
-            \umlobject{disk}
+            \umldatabase[class=SQLite3]{db}
+            \umlobject[class=DiskStorage]{disk}
             \begin{umlcall}[op=store $v$, return=$disk/f_{name}$]{db}{disk}
                 \begin{umlcallself}[op=compress, return=$v_c$]{disk}
                 \end{umlcallself}
@@ -292,8 +292,8 @@ as its backing caches.
             \end{umlcall}
         \end{umlseqdiag}
     \end{tikzpicture}
-    \label{fig:put_sequence_diagram}
     \caption{Sequence diagram for the put method.}
+    \label{fig:put_sequence_diagram}
 \end{figure}
 
 \subsubsection{Size}
