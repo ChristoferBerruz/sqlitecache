@@ -2,9 +2,12 @@ import os
 import random
 import time
 from collections import defaultdict
+from typing import Dict, List, Optional
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+from attrs import define, field
 
 from sqlitecache.cache import (
     BaseCache,
@@ -174,27 +177,99 @@ class TestHybridCache:
         assert hybrid_cache.get("key") == "value"
 
 
-p_values = [100, 200, 300, 500]
-q_values = [100, 200, 300, 500]
-p_ids = [f"p={p}" for p in p_values]
-q_ids = [f"q={q}" for q in q_values]
-n_request_values = [100, 200, 300, 500]
-n_request_ids = [f"n_requests={n_requests}" for n_requests in n_request_values]
+@define
+class SimulationResult:
+    """This is the result of the simulation.
+
+    It contains the hit rate, miss rate, and total number of requests.
+    """
+
+    cache_name: str
+    cache_size: int
+    hit_rates: List[float] = field(factory=list)
+    miss_rates: List[float] = field(factory=list)
+    requests: List[int] = field(factory=list)
+    T: Optional[int] = None
 
 
 @pytest.mark.simulation
 class TestSimulation:
+    """This is the simulation harness following the paper.
+
+    Assume the cache size is of 100 elements.
+    There are 500 unique elements that can be inserted.
+
+    Because the paper is element oriented, we need to adapt it to key
+    oriented.
+
+    We can use integer key-value pairs (k, k) where
+    k in [1, 500]. Each value occupy 1 byte.
+    Therefore, the cache size is 100 bytes.
+
+    One hyperparameter to tune is T = the counter before
+    the elements are evicted given that P, Q (sizes) are already
+    fixed to be 100.
+
+    The simulation is a sustained load of N requests.
+    At every request, we track the hit rate and miss rate.
+    Note that although the caches do keep track
+    of the hit rate and miss rates, accessing them
+    N times will incur a penalty on the TTL. Therefore,
+    we can use some aux structures in memory
+    to keep track of the hit rate and miss rate -
+    for simulation sake.
+    """
+
+    @pytest.fixture(scope="class")
+    def p(self):
+        # LRU cache size
+        yield 100
+
+    @pytest.fixture(scope="class")
+    def q(self):
+        # LFU cache size
+        yield 100
+
     @pytest.fixture(scope="class")
     def recorder(self):
         # Use the recorder such that we can collect the session stats
-        _recorder = defaultdict(list)
+        _recorder: Dict[str, SimulationResult] = {}
         yield _recorder
         # convert the stats to multiple dataframes, depending on they key
-        for key, values in _recorder.items():
-            df = pd.DataFrame(values)
-            df.to_csv(f"results/{key}.csv", index=False)
-            print(f"Stats for {key}:")
-            print(df.describe())
+        print("Simulation results:")
+        cache_names_to_df = {}
+        for key, result in _recorder.items():
+            df = pd.DataFrame(
+                {
+                    "hit_rate": result.hit_rates,
+                    "miss_rate": result.miss_rates,
+                    "requests": result.requests,
+                }
+            )
+            cache_names_to_df[key] = df
+            print(f"Cache: {key}")
+            print(df)
+            # Save the dataframe to a CSV file
+            filename = f"results/{key}_simulation_results.csv"
+            df.to_csv(filename, index=False)
+        print("Generating all plots")
+
+        # Plot all hit rates in the same subplot
+        def generate_plot_for_attr(attr: str = "hit_rate"):
+            plt.figure(figsize=(10, 6))
+            for key, df in cache_names_to_df.items():
+                plt.plot(df["requests"], df[attr], label=f"{key} Hit Rate")
+
+            plt.title(f"{attr} for different Cache")
+            plt.xlabel("Requests")
+            plt.ylabel(attr)
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(f"results/{attr}_plot.png")  # Save the plot as a PNG file
+
+        generate_plot_for_attr(attr="hit_rate")
+        generate_plot_for_attr(attr="miss_rate")
 
     @pytest.fixture
     def cache(self, request, p, q, db, disk_storage, n_requests, recorder):
@@ -208,63 +283,49 @@ class TestSimulation:
         else:
             raise ValueError("Invalid cache type")
         yield _cache
-        # collection of stats
-        hit_rate, miss_rate, total = _cache.get_rates()
-        recorder[request.param].append(
-            {
-                "size": p if request.param == "lru_cache" else q,
-                "n_requests": n_requests,
-                "hit_rate": hit_rate,
-                "miss_rate": miss_rate,
-                "total": total,
-            }
-        )
-        print(f"Hit rate: {hit_rate}, Miss rate: {miss_rate}, Total: {total}")
 
-    @pytest.mark.parametrize("p", p_values, ids=p_ids)
-    @pytest.mark.parametrize("q", q_values, ids=q_ids)
     @pytest.mark.parametrize("cache", ["lru_cache", "lfu_cache_no_ttl"], indirect=True)
-    @pytest.mark.parametrize("n_requests", n_request_values, ids=n_request_ids)
-    def test_simulation(self, p, q, cache: BaseCache, n_requests):
-        """This is basically a simulation of doing random requests to the cache.
-        Because our cache is "key" oriented rather than value oriented,
-        we can insert the same value under random keys.
-
-        The probability of reading and writing to the cache is 50% each.
-        """
-
-        def get_random_key():
-            return f"key{random.randint(1, n_requests)}"
-
-        inserted_keys_set = set()
-        inserted_keys_lst = []
-
-        # Penalty on memory, but easy lookup and avoid
-        # overhead of converting the set into a list
-        def perform_insert():
-            key = get_random_key()
-            value = "value"
-            if key not in inserted_keys_set:
-                inserted_keys_set.add(key)
-                inserted_keys_lst.append(key)
-            cache.put(key, value)
-
-        def perform_read():
-            if not inserted_keys_lst:
-                return
-            key = random.choice(inserted_keys_lst)
-            value = cache.get(key)
-            if value is None:
-                # It is possible to have a hit miss,
-                # but we need to update these two such that we can
-                # always pick a read from the current values
-                inserted_keys_set.remove(key)
-                inserted_keys_lst.remove(key)
-
-        for _ in range(n_requests):
-            prob = random.random()
-            if prob < 0.5:
-                # Write to the cache
-                perform_insert()
+    def test_simulation(self, p, q, cache: BaseCache, n_requests, recorder):
+        """See the class docstring for the simulation."""
+        hit_miss_rates_tracker = {
+            "hits": 0,
+            "misses": 0,
+            "total_requests": 0,
+        }
+        simulation_result = SimulationResult(
+            cache_name=cache.__class__.__name__,
+            cache_size=cache.settings.max_size_in_bytes,
+            T=None,
+        )
+        # 500 unique elements that can be inserted
+        key_values_pairs = [(i, i) for i in range(1, 501)]
+        recorder[cache.__class__.__name__] = simulation_result
+        # sustained load of N requests
+        for i in range(n_requests):
+            key = random.choice(key_values_pairs)
+            result = cache.get(key, default=None)
+            hit_miss_rates_tracker["total_requests"] += 1
+            if result is not None:
+                hit_miss_rates_tracker["hits"] += 1
             else:
-                perform_read()
+                hit_miss_rates_tracker["misses"] += 1
+            # hits and misses only make sense for reads
+            cur_hit_rate = (
+                hit_miss_rates_tracker["hits"]
+                / hit_miss_rates_tracker["total_requests"]
+            )
+            cur_miss_rate = (
+                hit_miss_rates_tracker["misses"]
+                / hit_miss_rates_tracker["total_requests"]
+            )
+            cur_requests = hit_miss_rates_tracker["total_requests"]
+            simulation_result.hit_rates.append(cur_hit_rate)
+            simulation_result.miss_rates.append(cur_miss_rate)
+            simulation_result.requests.append(cur_requests)
+            # Bear with me here. In the paper, if the element is
+            # not in the cache, we insert it. This is weird
+            # because in concrete, that is not a real cache.
+            # Regardless, we will do it ONLY during the simulation
+            # and not ship it in the actual classes.
+            if result is None:
+                cache.put(key, key)
