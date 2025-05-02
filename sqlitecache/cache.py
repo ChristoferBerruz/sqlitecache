@@ -543,7 +543,7 @@ class LRUCache(FunctionalCache):
 @define
 class TTLSettings:
     use_ttl: bool = False
-    default_ttl: int = 0
+    default_ttl: float = 0
 
     def __attrs_post_init__(self):
         if self.use_ttl and self.default_ttl <= 0:
@@ -614,10 +614,37 @@ class LFUCache(FunctionalCache):
                     """,
                     (now,),
                 )
-        # after deleting everything that was expired, we might still not have enough space.
-        # fall back onto the count based eviction policy. Otherwise, the user will
-        # have to wait until the TTL expires - which can be a looong time.
-        self._evict_until_satified_countbased(size)
+        if self.fits(size):
+            return
+        # If we need more space, we need to evict the elements based on ttl.
+        # Now, because we never updated the ttl, we don't know which is the lowest.
+        # An example, assume at t = 0, we inserted with ttl = 6, and at t = 5, we inserted
+        # with ttl = 2. The first one will be evicted first, but the second one is the one
+        # that is going to expire first. So we need to update the ttl of all the elements first
+        with self.commit_connection() as cursor:
+            # update is simply the delta = now - stored_at
+            # and new_ttl = ttl - delta
+            now = pendulum.now().timestamp()
+            cursor.execute(
+                f"""
+                    UPDATE {self.cache_table}
+                    SET ttl = ttl - (? - stored_at)
+                    WHERE stored_at + ttl < ?
+                    """,
+                (now, now),
+            )
+        while not self.fits(size):
+            with self.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT key
+                    FROM {self.cache_table}
+                    ORDER BY ttl ASC
+                    LIMIT 1
+                    """
+                )
+                evict_key = cursor.fetchone()[0]
+                self.delete(evict_key)
 
     def _evict_until_satified_countbased(self, size: int):
         while not self.fits(size):
@@ -705,7 +732,7 @@ class LFUCache(FunctionalCache):
             )
 
     @auto_hash_key
-    def reset_ttl(self, key: Hashable, ttl: int):
+    def reset_ttl(self, key: Hashable, ttl: float):
         with self.commit_connection() as con:
             con.execute(
                 f"""
@@ -737,7 +764,7 @@ class LFUCache(FunctionalCache):
                     size INTEGER NOT NULL,
                     stored_at TIMESTAMP NOT NULL,
                     accessed_count INTEGER NOT NULL,
-                    ttl INTEGER
+                    ttl REAL
                 )
                 """
             )
@@ -780,7 +807,7 @@ class HybridCache(BaseCache):
     Based on: https://ieeexplore.ieee.org/document/10454976
     """
 
-    ttl: int
+    ttl: float
     treshold: int
     lru_cache: LRUCache
     lfu_cache: LFUCache
