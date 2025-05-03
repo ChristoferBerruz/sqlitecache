@@ -600,8 +600,7 @@ class LFUCache(FunctionalCache):
         else:
             self._evict_until_satified_countbased(size)
 
-    def _evict_until_satified_ttl(self, size: int):
-        # If we are using TTL, we need to evict the elements that are expired.
+    def _evict_all_expired(self):
         if self.ttl_settings is not None and self.ttl_settings.use_ttl:
             with self.commit_connection() as cursor:
                 now = pendulum.now().timestamp()
@@ -614,6 +613,9 @@ class LFUCache(FunctionalCache):
                     """,
                     (now,),
                 )
+
+    def _evict_until_satified_ttl(self, size: int):
+        self._evict_all_expired()
         if self.fits(size):
             return
         # If we need more space, we need to evict the elements based on ttl.
@@ -701,6 +703,7 @@ class LFUCache(FunctionalCache):
 
     @auto_hash_key
     def get(self, key: Hashable, default: Any = None) -> Any:
+        self._evict_all_expired()
         if not self.exists(key):
             self._update_hit_rate(hit=False)
             return default
