@@ -811,7 +811,7 @@ class HybridCache(BaseCache):
     """
 
     ttl: float
-    treshold: int
+    threshold: int
     lru_cache: LRUCache
     lfu_cache: LFUCache
     counter: Counter = field(factory=Counter)
@@ -903,7 +903,7 @@ class HybridCache(BaseCache):
         if self.lru_cache.exists(key):
             self.counter[key] += 1
             value = self.lru_cache.get(key)
-            if self.counter[key] >= self.treshold:
+            if self.counter[key] >= self.threshold:
                 self.move_element_to_lfu(key, value)
             value_to_return = value
         elif self.lfu_cache.exists(key):
@@ -926,7 +926,7 @@ class HybridCache(BaseCache):
         self.lru_cache.delete(key)
         # Add element to LFU Cache, but evict the ones with the lowest TTL
         # We need to somehow pass this as a param.
-        self.lfu_cache.put(key, value, self.ttl, resolution="ttl")
+        self.lfu_cache.put(key, value, ttl=self.ttl)
 
     @auto_hash_key
     def delete(self, key: Hashable):

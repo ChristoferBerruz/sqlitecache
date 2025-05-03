@@ -56,14 +56,14 @@ def ttl() -> int:
 
 
 @pytest.fixture
-def treshold() -> int:
+def threshold() -> int:
     return 5
 
 
 @pytest.fixture
-def hybrid_cache(lru_cache, lfu_cache, ttl, treshold, db):
+def hybrid_cache(lru_cache, lfu_cache, ttl, threshold, db):
     return HybridCache(
-        db=db, ttl=ttl, treshold=treshold, lru_cache=lru_cache, lfu_cache=lfu_cache
+        db=db, ttl=ttl, threshold=threshold, lru_cache=lru_cache, lfu_cache=lfu_cache
     )
 
 
@@ -175,6 +175,30 @@ class TestHybridCache:
     def test_hybrid_put(self, hybrid_cache):
         hybrid_cache.put("key", "value")
         assert hybrid_cache.get("key") == "value"
+
+    @pytest.mark.slow
+    def test_hybrid_eviction(
+        self, hybrid_cache: HybridCache, disk_storage: DiskStorage
+    ):
+        def put_and_get_with_delay(key, value):
+            hybrid_cache.put(key, value)
+            time.sleep(0.1)  # Simulate some delay
+            _cache_val = hybrid_cache.get(key)
+            assert _cache_val == value
+
+        # put and get with delay to simulate the time passing
+        put_and_get_with_delay("key1", "value1")
+        put_and_get_with_delay("key2", "value2")
+        put_and_get_with_delay("key3", "value3")
+        put_and_get_with_delay("key4", "value4")
+        put_and_get_with_delay("key4", "value5")
+        # key5 should trigger eviction
+        put_and_get_with_delay("key5", "value5")
+        # Make sure one of the previous keys was actually evicted
+        assert any(
+            hybrid_cache.lru_cache.get(key) is None
+            for key in ["key1", "key2", "key3", "key4"]
+        )
 
 
 @define
