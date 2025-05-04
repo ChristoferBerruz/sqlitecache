@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 
@@ -16,3 +18,11 @@ def pytest_addoption(parser):
 def n_requests(request):
     """Fixture to get the number of requests from the command line."""
     yield request.config.getoption("--n-requests")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def create_results_dir():
+    """Fixture to create the results directory if it doesn't exist."""
+    if not os.path.exists("results"):
+        os.makedirs("results")
+    yield

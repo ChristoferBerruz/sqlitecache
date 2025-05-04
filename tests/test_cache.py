@@ -273,9 +273,8 @@ class TestSimulation:
         # Use the recorder such that we can collect the session stats
         _recorder: Dict[str, SimulationResult] = {}
         yield _recorder
-        # convert the stats to multiple dataframes, depending on they key
-        print("Simulation results:")
         cache_names_to_df = {}
+        # Saving the results to a CSV file
         for key, result in _recorder.items():
             df = pd.DataFrame(
                 {
@@ -290,24 +289,6 @@ class TestSimulation:
             # Save the dataframe to a CSV file
             filename = f"results/{key}SimulationResults.csv"
             df.to_csv(filename, index=False)
-        print("Generating all plots")
-
-        # Plot all hit rates in the same subplot
-        def generate_plot_for_attr(attr: str = "hit_rate"):
-            plt.figure(figsize=(10, 6))
-            for key, df in cache_names_to_df.items():
-                plt.plot(df["requests"], df[attr], label=f"{key} Hit Rate")
-
-            plt.title(f"{attr} for different Cache")
-            plt.xlabel("Requests")
-            plt.ylabel(attr)
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(f"results/{attr}_plot.png")  # Save the plot as a PNG file
-
-        generate_plot_for_attr(attr="hit_rate")
-        generate_plot_for_attr(attr="miss_rate")
 
     @pytest.fixture
     def lru_cache(self, db, disk_storage, p) -> LRUCache:
