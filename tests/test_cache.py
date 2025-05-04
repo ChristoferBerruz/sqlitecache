@@ -216,6 +216,7 @@ class SimulationResult:
     T: Optional[int] = None
 
 
+@pytest.mark.slow
 @pytest.mark.simulation
 class TestSimulation:
     """This is the simulation harness following the paper.
@@ -247,12 +248,25 @@ class TestSimulation:
     @pytest.fixture(scope="class")
     def p(self):
         # LRU cache size
-        yield 100
+        yield 1_800
 
     @pytest.fixture(scope="class")
     def q(self):
         # LFU cache size
-        yield 100
+        yield 1_800
+
+    @pytest.fixture
+    def ttl_settings(self, ttl):
+        # TTL settings
+        yield TTLSettings(use_ttl=True, default_ttl=ttl)
+
+    @pytest.fixture
+    def ttl(self):
+        yield 5
+
+    @pytest.fixture
+    def threshold(self):
+        yield 5
 
     @pytest.fixture(scope="class")
     def recorder(self):
@@ -274,7 +288,7 @@ class TestSimulation:
             print(f"Cache: {key}")
             print(df)
             # Save the dataframe to a CSV file
-            filename = f"results/{key}_simulation_results.csv"
+            filename = f"results/{key}SimulationResults.csv"
             df.to_csv(filename, index=False)
         print("Generating all plots")
 
@@ -296,37 +310,53 @@ class TestSimulation:
         generate_plot_for_attr(attr="miss_rate")
 
     @pytest.fixture
-    def cache(self, request, p, q, db, disk_storage, n_requests, recorder):
-        _cache = None
-        if request.param == "lru_cache":
-            size_settings = CacheSettings(max_size_in_bytes=p)
-            _cache = LRUCache(db=db, storage=disk_storage, settings=size_settings)
-        elif request.param == "lfu_cache_no_ttl":
-            size_settings = CacheSettings(max_size_in_bytes=q)
-            _cache = LFUCache(db=db, storage=disk_storage, settings=size_settings)
-        else:
-            raise ValueError("Invalid cache type")
-        yield _cache
+    def lru_cache(self, db, disk_storage, p) -> LRUCache:
+        size_settings = CacheSettings(max_size_in_bytes=p)
+        return LRUCache(db=db, storage=disk_storage, settings=size_settings)
 
-    @pytest.mark.parametrize("cache", ["lru_cache", "lfu_cache_no_ttl"], indirect=True)
-    def test_simulation(self, p, q, cache: BaseCache, n_requests, recorder):
-        """See the class docstring for the simulation."""
+    @pytest.fixture
+    def lfu_cache(self, db, disk_storage, q) -> LFUCache:
+        size_settings = CacheSettings(max_size_in_bytes=q)
+        return LFUCache(db=db, storage=disk_storage, settings=size_settings)
+
+    @pytest.fixture
+    def lfu_cache_ttl(self, db, disk_storage, q, ttl_settings) -> LFUCache:
+        size_settings = CacheSettings(max_size_in_bytes=q)
+        return LFUCache(
+            db=db,
+            storage=disk_storage,
+            settings=size_settings,
+            ttl_settings=ttl_settings,
+        )
+
+    @pytest.fixture
+    def hybrid_cache(self, lru_cache, lfu_cache, threshold, ttl, db) -> HybridCache:
+        return HybridCache(
+            db=db,
+            lru_cache=lru_cache,
+            lfu_cache=lfu_cache,
+            threshold=threshold,
+            ttl=ttl,
+        )
+
+    @pytest.fixture(scope="class")
+    def dataset(self):
+        yield [f"{i}".zfill(3) for i in range(1, 501)]
+
+    def run_simulation(self, cache: BaseCache, dataset: List[str], n_requests: int):
+        """Run the simulation for a given cache and dataset."""
         hit_miss_rates_tracker = {
             "hits": 0,
             "misses": 0,
             "total_requests": 0,
         }
-        simulation_result = SimulationResult(
-            cache_name=cache.__class__.__name__,
-            cache_size=cache.settings.max_size_in_bytes,
-            T=None,
-        )
-        # 500 unique elements that can be inserted
-        key_values_pairs = [(i, i) for i in range(1, 501)]
-        recorder[cache.__class__.__name__] = simulation_result
+        miss_rates = []
+        hit_rates = []
+        all_requests = []
+
         # sustained load of N requests
-        for i in range(n_requests):
-            key = random.choice(key_values_pairs)
+        for _ in range(n_requests):
+            key = random.choice(dataset)
             result = cache.get(key, default=None)
             hit_miss_rates_tracker["total_requests"] += 1
             if result is not None:
@@ -343,9 +373,9 @@ class TestSimulation:
                 / hit_miss_rates_tracker["total_requests"]
             )
             cur_requests = hit_miss_rates_tracker["total_requests"]
-            simulation_result.hit_rates.append(cur_hit_rate)
-            simulation_result.miss_rates.append(cur_miss_rate)
-            simulation_result.requests.append(cur_requests)
+            miss_rates.append(cur_miss_rate)
+            hit_rates.append(cur_hit_rate)
+            all_requests.append(cur_requests)
             # Bear with me here. In the paper, if the element is
             # not in the cache, we insert it. This is weird
             # because in concrete, that is not a real cache.
@@ -353,3 +383,62 @@ class TestSimulation:
             # and not ship it in the actual classes.
             if result is None:
                 cache.put(key, key)
+        return hit_rates, miss_rates, all_requests
+
+    def test_simulation_lru_cache(self, lru_cache, n_requests, recorder, dataset):
+        """See the class docstring for the simulation."""
+        hit_rates, miss_rates, all_requests = self.run_simulation(
+            lru_cache, dataset, n_requests
+        )
+        cache_name = "LRUCache"
+        recorder[cache_name] = SimulationResult(
+            cache_name=cache_name,
+            cache_size=lru_cache.settings.max_size_in_bytes,
+            hit_rates=hit_rates,
+            miss_rates=miss_rates,
+            requests=all_requests,
+        )
+
+    def test_simulation_lfu_cache(self, lfu_cache, n_requests, recorder, dataset):
+        """See the class docstring for the simulation."""
+        hit_rates, miss_rates, all_requests = self.run_simulation(
+            lfu_cache, dataset, n_requests
+        )
+        cache_name = "LFUCache"
+        recorder[cache_name] = SimulationResult(
+            cache_name=cache_name,
+            cache_size=lfu_cache.settings.max_size_in_bytes,
+            hit_rates=hit_rates,
+            miss_rates=miss_rates,
+            requests=all_requests,
+        )
+
+    def test_simulation_lfu_cache_ttl(
+        self, lfu_cache_ttl, n_requests, recorder, dataset
+    ):
+        """See the class docstring for the simulation."""
+        hit_rates, miss_rates, all_requests = self.run_simulation(
+            lfu_cache_ttl, dataset, n_requests
+        )
+        cache_name = "LFUCacheTTL"
+        recorder[cache_name] = SimulationResult(
+            cache_name=cache_name,
+            cache_size=lfu_cache_ttl.settings.max_size_in_bytes,
+            hit_rates=hit_rates,
+            miss_rates=miss_rates,
+            requests=all_requests,
+        )
+
+    def test_simulation_hybrid_cache(self, hybrid_cache, n_requests, recorder, dataset):
+        """See the class docstring for the simulation."""
+        hit_rates, miss_rates, all_requests = self.run_simulation(
+            hybrid_cache, dataset, n_requests
+        )
+        cache_name = "HybridCache"
+        recorder[cache_name] = SimulationResult(
+            cache_name=cache_name,
+            cache_size=hybrid_cache.lru_cache.settings.max_size_in_bytes,
+            hit_rates=hit_rates,
+            miss_rates=miss_rates,
+            requests=all_requests,
+        )
