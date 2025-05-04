@@ -60,16 +60,13 @@ import os
 import pickle
 import sqlite3
 import uuid
+import zlib
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import Any, Generator, Hashable, Optional, Tuple
 
 import pendulum
 from attrs import define
-
-import sqlite3
-import pickle
-import zlib
 from cryptography.fernet import Fernet
 
 HashedKey = int
@@ -105,7 +102,7 @@ class DiskStorage:
     fernet: Optional[Fernet] = None
 
     def __attrs_post_init__(self):
-        if self.encryption_key is None: 
+        if self.encryption_key is None:
             self.encryption_key = Fernet.generate_key()
         self.fernet = Fernet(self.encryption_key)
 
@@ -375,7 +372,9 @@ class LRUCache(FunctionalCache):
                 )
                 result = cursor.fetchone()
                 if result is None:
-                    raise RuntimeError("Cannot fit item into cache even after evicting all entries.")
+                    raise RuntimeError(
+                        "Cannot fit item into cache even after evicting all entries."
+                    )
                 evict_key = result[0]
                 self.delete(evict_key)
 
@@ -530,7 +529,9 @@ class LFUCache(FunctionalCache):
                 )
                 result = cursor.fetchone()
                 if result is None:
-                    raise RuntimeError("Cannot fit item into cache even after evicting all entries.")
+                    raise RuntimeError(
+                        "Cannot fit item into cache even after evicting all entries."
+                    )
                 evict_key = result[0]
                 self.delete(evict_key)
 

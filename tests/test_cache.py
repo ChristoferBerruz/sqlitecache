@@ -1,10 +1,11 @@
 import os
 import shutil
 import tempfile
+
 import pytest
+from cryptography.fernet import Fernet
 
 from sqlitecache.cache import CacheSettings, DiskStorage, LFUCache, LRUCache
-from cryptography.fernet import Fernet
 
 
 @pytest.fixture(scope="session")
