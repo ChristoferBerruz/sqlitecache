@@ -639,6 +639,36 @@ class LFUCache(FunctionalCache):
                     """,
                     ("default_ttl", self.ttl_settings.default_ttl),
                 )
+        # read back the settings
+        disk_ttl_settings = None
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'use_ttl'
+                """
+            )
+            maybe_use_ttl = cursor.fetchone()
+            if maybe_use_ttl is None:
+                disk_ttl_settings = None
+                return
+            use_ttl = int(maybe_use_ttl[0])
+            if use_ttl == 1:
+                use_ttl = True
+            else:
+                use_ttl = False
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'default_ttl'
+                """
+            )
+            # if ttl was defined, we are guaranteed to have a value.
+            default_ttl = float(cursor.fetchone()[0])
+            disk_ttl_settings = TTLSettings(use_ttl=use_ttl, default_ttl=default_ttl)
+        self.ttl_settings = disk_ttl_settings
 
     @auto_hash_key
     def put(self, key: Hashable, value: Any, ttl: Optional[int] = None) -> HashedKey:
