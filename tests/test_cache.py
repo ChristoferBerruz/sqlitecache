@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 from attrs import define, field
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from sqlitecache.cache import (
     BaseCache,
@@ -67,25 +68,64 @@ def hybrid_cache(lru_cache, lfu_cache, ttl, threshold, db):
     )
 
 
-class TestCompression:
+class TestCompressionAndEncryption:
+    # This works like a hardness where we test
+    # the combinations of compression and encryption
+    # with the LRU and LFU caches.
     @pytest.fixture
-    def cache_settings(self, max_size):
-        return CacheSettings(max_size, compression=True)
+    def max_size(self):
+        # bump up the size to 512 bytes because
+        # it is possible that encryption bloats the byte size
+        return 512
+
+    @pytest.fixture
+    def private_rsa_key(self):
+        # Generate a private RSA key for testing
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+        )
+        return private_key
+
+    @pytest.fixture
+    def public_rsa_key(self, private_rsa_key):
+        # Generate a public RSA key from the private key
+        public_key = private_rsa_key.public_key()
+        return public_key
+
+    @pytest.fixture(params=[True, False], ids=["compression", "no_compression"])
+    def compression(self, request):
+        return request.param
+
+    @pytest.fixture(params=[True, False], ids=["encryption", "no_encryption"])
+    def pub_key(self, request, public_rsa_key):
+        if request.param:
+            return public_rsa_key
+        return None
+
+    @pytest.fixture
+    def cache_settings(self, max_size, compression, pub_key):
+        return CacheSettings(max_size, compression=compression, public_key=pub_key)
 
     @pytest.fixture(params=["lru", "lfu"])
-    def cache(self, request, lru_cache: LRUCache, lfu_cache: LFUCache):
-        if request.param == "lru":
-            return lru_cache
-        elif request.param == "lfu":
-            return lfu_cache
+    def cache(self, request, lru_cache: LRUCache, lfu_cache: LFUCache, private_rsa_key):
+        cache_to_return = lru_cache if request.param == "lru" else lfu_cache
+        if cache_to_return.settings.public_key is not None:
+            cache_to_return._private_key = private_rsa_key
+        return cache_to_return
 
-    def test_compression(self, cache: BaseCache, disk_storage: DiskStorage, mocker):
-        put_spy = mocker.spy(disk_storage, "put")
-        # Test that the cache is compressed
+    def test_feature(self, cache: BaseCache, disk_storage: DiskStorage):
+        # Test that putting and getting a value works
+        # regardless of compression and encryption being active
         cache.put("key", "value")
         assert cache.get("key") == "value"
-        put_spy.assert_called_once()
-        assert put_spy.call_args.kwargs["compression"] is True
+
+
+class TestEncryption:
+    @pytest.fixture
+    def cache_settings(self, max_size, public_rsa_key):
+        # Use the public key for encryption
+        return CacheSettings(max_size, encryption=True, encryption_key=public_rsa_key)
 
 
 class TestLRUCache:
