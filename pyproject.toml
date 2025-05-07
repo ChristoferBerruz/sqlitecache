@@ -10,6 +10,7 @@ python = "^3.10"
 attrs = "^25.3.0"
 pendulum = "^3.0.0"
 pytest-mock = "^3.14.0"
+scienceplots = "^2.1.1"
 
 
 [tool.poetry.group.dev.dependencies]
