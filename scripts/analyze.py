@@ -2,6 +2,9 @@ import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import scienceplots
+
+plt.style.use(["science", "ieee"])
 
 
 def create_df_hashmap():
@@ -26,16 +29,18 @@ def generate_all_plots():
     def generate_plot_for_attr(attr: str = "hit_rate"):
         plt.figure(figsize=(10, 6))
         for key, df in cache_names_to_df.items():
-            plt.plot(df["requests"], df[attr], label=f"{key} Hit Rate")
+            # plot only every 10 values
+            plt.plot(df["requests"], df[attr], label=f"{key}")
 
-        plt.title(f"{attr} for different Cache")
+        plt.title(f"{attr} for different eviction policies")
         plt.xlabel("Requests")
         plt.ylabel(attr)
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        # Save the plot as a PNG file
-        plt.savefig(f"results/{attr}_plot.png")
+        # Save the plot as a PNG and EPS file
+        plt.savefig(f"results/{attr}_plot.eps", format="eps")
+        plt.savefig(f"results/{attr}_plot.png", format="png")
 
     generate_plot_for_attr(attr="hit_rate")
     generate_plot_for_attr(attr="miss_rate")
