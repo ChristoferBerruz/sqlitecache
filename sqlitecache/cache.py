@@ -60,6 +60,7 @@ import os
 import pickle
 import sqlite3
 import uuid
+import zlib
 from abc import ABC, abstractmethod
 from collections import Counter
 from contextlib import contextmanager
@@ -99,28 +100,46 @@ class Cache(ABC):
         pass
 
 
-@define(frozen=False)
+@define(frozen=False, slots=False)
 class DiskStorage:
     storage_dir: str
 
-    def put(self, key: Hashable, value: Any) -> Tuple[str, int]:
+    def put(
+        self, key: Hashable, value: Any, compression: bool = False
+    ) -> Tuple[str, int]:
         filename = f"{uuid.uuid4().hex}.cache"
         filepath = os.path.join(self.storage_dir, filename)
         with open(filepath, "wb") as f:
-            pickle.dump(value, f)
+            if compression:
+                compressed_value = zlib.compress(pickle.dumps(value))
+                f.write(compressed_value)
+            else:
+                pickle.dump(value, f)
         return filename, os.path.getsize(filepath)
 
-    def get(self, filename: str) -> Any:
+    def get(self, filename: str, compression: bool = False) -> Any:
         filepath = os.path.join(self.storage_dir, filename)
         with open(filepath, "rb") as f:
-            return pickle.load(f)
+            if compression:
+                compressed_value = f.read()
+                return pickle.loads(zlib.decompress(compressed_value))
+            else:
+                # If not compressed, just load the value
+                # and return it.
+                return pickle.load(f)
 
     def delete(self, filename: str):
         filepath = os.path.join(self.storage_dir, filename)
         os.remove(filepath)
 
-    def predict_size(self, value: Any) -> int:
-        return len(pickle.dumps(value))
+    def predict_size(self, value: Any, compression: bool = False) -> int:
+        if compression:
+            # If we are using compression, we need to compress the value
+            # and then get the size.
+            return len(zlib.compress(pickle.dumps(value)))
+        # If not, we just need to get the size of the pickled value.
+        else:
+            return len(pickle.dumps(value))
 
     @contextmanager
     def defer_delete(self, filename: str):
@@ -137,6 +156,7 @@ def get_hash_for_key(key: Hashable) -> int:
 @define
 class CacheSettings:
     max_size_in_bytes: int
+    compression: bool = False
 
 
 @define
@@ -251,6 +271,16 @@ class FunctionalCache(BaseCache):
                 ON CONFLICT(setting) DO NOTHING
                 """,
                 ("max_size", self.settings.max_size_in_bytes),
+            )
+            # compression is a boolean, so we need to convert it to an int.
+            # 0 for False, 1 for True.
+            con.execute(
+                f"""
+                INSERT INTO {self.metadata_table} (setting, value)
+                VALUES (?, ?)
+                ON CONFLICT(setting) DO NOTHING
+                """,
+                ("compression", int(self.settings.compression)),
             )
             # Let's also add tracking for hit and miss rates.
             con.execute(
@@ -393,7 +423,9 @@ class LRUCache(FunctionalCache):
 
     @auto_hash_key
     def put(self, key: Hashable, value: Any) -> HashedKey:
-        predicted_size = self.storage.predict_size(value)
+        predicted_size = self.storage.predict_size(
+            value, compression=self.settings.compression
+        )
         if not self.exists(key):
             self._evict_until_satified(predicted_size)
             self._put_new(key, value)
@@ -421,7 +453,9 @@ class LRUCache(FunctionalCache):
     def _put_new(self, key: Hashable, value: Any) -> HashedKey:
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
-            filename, size = self.storage.put(key, value)
+            filename, size = self.storage.put(
+                key, value, compression=self.settings.compression
+            )
             con.execute(
                 f"""
                 INSERT INTO {self.cache_table} (key, filename, size, stored_at, accessed_at)
@@ -438,7 +472,9 @@ class LRUCache(FunctionalCache):
             prev_filename
         ) as _, self.commit_connection() as con:
             now = pendulum.now().timestamp()
-            filename, size = self.storage.put(key, value)
+            filename, size = self.storage.put(
+                key, value, compression=self.settings.compression
+            )
             con.execute(
                 f"""
                 UPDATE {self.cache_table}
@@ -467,7 +503,7 @@ class LRUCache(FunctionalCache):
                 """,
                 (now, key),
             )
-            return self.storage.get(filename)
+            return self.storage.get(filename, compression=self.settings.compression)
 
     @auto_hash_key
     def delete(self, key: Hashable):
@@ -585,7 +621,9 @@ class LFUCache(FunctionalCache):
         # By doing this, we are allowing user to insert a ttl value into the
         # cache but it will not be used if the cache is not configured to use it.
         _ttl = ttl or self.ttl_settings.default_ttl if self.ttl_settings else ttl
-        predicted_size = self.storage.predict_size(value)
+        predicted_size = self.storage.predict_size(
+            value, compression=self.settings.compression
+        )
         if not self.exists(key):
             self._evict_until_satified(predicted_size)
             return self._put_new(key, value, _ttl)
@@ -670,7 +708,9 @@ class LFUCache(FunctionalCache):
     ) -> HashedKey:
         with self.commit_connection() as con:
             now = pendulum.now().timestamp()
-            filename, size = self.storage.put(key, value)
+            filename, size = self.storage.put(
+                key, value, compression=self.settings.compression
+            )
             con.execute(
                 f"""
                 INSERT INTO {self.cache_table} (key, filename, size, stored_at, accessed_count, ttl)
@@ -689,7 +729,9 @@ class LFUCache(FunctionalCache):
             prev_filename
         ) as _, self.commit_connection() as con:
             now = pendulum.now().timestamp()
-            filename, size = self.storage.put(key, value)
+            filename, size = self.storage.put(
+                key, value, compression=self.settings.compression
+            )
             # We reset the accessed_count to 0 because we are updating the value.
             con.execute(
                 f"""
@@ -718,7 +760,7 @@ class LFUCache(FunctionalCache):
                 """,
                 (key,),
             )
-            return self.storage.get(filename)
+            return self.storage.get(filename, self.settings.compression)
 
     @auto_hash_key
     def delete(self, key: Hashable):

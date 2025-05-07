@@ -67,6 +67,27 @@ def hybrid_cache(lru_cache, lfu_cache, ttl, threshold, db):
     )
 
 
+class TestCompression:
+    @pytest.fixture
+    def cache_settings(self, max_size):
+        return CacheSettings(max_size, compression=True)
+
+    @pytest.fixture(params=["lru", "lfu"])
+    def cache(self, request, lru_cache: LRUCache, lfu_cache: LFUCache):
+        if request.param == "lru":
+            return lru_cache
+        elif request.param == "lfu":
+            return lfu_cache
+
+    def test_compression(self, cache: BaseCache, disk_storage: DiskStorage, mocker):
+        put_spy = mocker.spy(disk_storage, "put")
+        # Test that the cache is compressed
+        cache.put("key", "value")
+        assert cache.get("key") == "value"
+        put_spy.assert_called_once()
+        assert put_spy.call_args.kwargs["compression"] is True
+
+
 class TestLRUCache:
     def test_lru_put(self, lru_cache):
         lru_cache.put("key", "value")
