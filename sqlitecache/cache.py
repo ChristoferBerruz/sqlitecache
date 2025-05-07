@@ -255,6 +255,7 @@ class FunctionalCache(BaseCache):
     def _set_settings(self):
         # To set the settings, first double check that the settings exists.
         # Let's use ON CONFLICT to avoid duplicates by simply ignoring the request.
+        # Also, all setting values are simply TEXT strings!
         with self.commit_connection() as con:
             con.execute(
                 f"""
@@ -299,6 +300,29 @@ class FunctionalCache(BaseCache):
                 """,
                 ("miss_rate", 0),
             )
+        # Override the in-memory settings with the ones from the database.
+        with self.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'compression'
+                """
+            )
+            compression = int(cursor.fetchone()[0])
+            if compression == 1:
+                self.settings.compression = True
+            else:
+                self.settings.compression = False
+            cursor.execute(
+                f"""
+                SELECT value
+                FROM {self.metadata_table}
+                WHERE setting = 'max_size'
+                """
+            )
+            max_size = cursor.fetchone()[0]
+            self.settings.max_size_in_bytes = int(max_size)
 
     def _update_hit_rate(self, hit: bool):
         """
