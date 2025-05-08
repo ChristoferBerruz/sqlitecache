@@ -98,3 +98,8 @@ lru_cache = LRUCache(db="cache", storage=disk_storage, settings=cache_settings)
 ```
 
 # Contributions
+Christofer Washington Berruz Chungata (christoferwashington.berruzchungata@sjsu.edu):
+Designed and implemented overall persistency architecture used by `sqlitecache`. Implemented LRU, LFU, and Hybrid eviction policies. Added compression and encryption support. Ran simulations to replicate results from prior work. Wrote tests using pytest. Optimized schema and queries with triggers and conflict handling.
+
+Mithi Pandey (mithi.pandey@sjsu.edu):
+Wrote the literature review, summarizing prior work relevant to the Hybrid cache eviction policy. Also reviewed presentation slides and added comments for clarity and structure.
