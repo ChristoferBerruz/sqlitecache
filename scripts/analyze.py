@@ -1,3 +1,4 @@
+import argparse
 import os
 
 import matplotlib.pyplot as plt
@@ -7,14 +8,14 @@ import scienceplots
 plt.style.use(["science", "ieee"])
 
 
-def create_df_hashmap():
-    # crawl the results directory and create a dictionary of dataframes
+def create_df_hashmap(results_path):
+    # Crawl the results directory and create a dictionary of dataframes
     # by reading the CSV files
     cache_names_to_df = {}
-    for filename in os.listdir("results"):
+    for filename in os.listdir(results_path):
         if filename.endswith(".csv"):
             # Read the CSV file into a DataFrame
-            df = pd.read_csv(os.path.join("results", filename))
+            df = pd.read_csv(os.path.join(results_path, filename))
             # Extract the cache name from the filename
             cache_name = filename.split("Simulation")[0]
             # Store the DataFrame in the dictionary
@@ -22,8 +23,8 @@ def create_df_hashmap():
     return cache_names_to_df
 
 
-def generate_all_plots():
-    cache_names_to_df = create_df_hashmap()
+def generate_all_plots(results_path):
+    cache_names_to_df = create_df_hashmap(results_path)
 
     # Plot all hit rates in the same subplot
     def generate_plot_for_attr(attr: str = "hit_rate"):
@@ -39,13 +40,23 @@ def generate_all_plots():
         plt.grid(True)
         plt.tight_layout()
         # Save the plot as a PNG and EPS file
-        plt.savefig(f"results/{attr}_plot.eps", format="eps")
-        plt.savefig(f"results/{attr}_plot.png", format="png")
+        plt.savefig(os.path.join(results_path, f"{attr}_plot.eps"), format="eps")
+        plt.savefig(os.path.join(results_path, f"{attr}_plot.png"), format="png")
 
     generate_plot_for_attr(attr="hit_rate")
     generate_plot_for_attr(attr="miss_rate")
 
 
 if __name__ == "__main__":
-    generate_all_plots()
-    print("Plots generated and saved in the results directory.")
+    parser = argparse.ArgumentParser(
+        description="Generate plots from simulation results."
+    )
+    parser.add_argument(
+        "results_path",
+        type=str,
+        help="Path to the directory containing the simulation result CSV files.",
+    )
+    args = parser.parse_args()
+
+    generate_all_plots(args.results_path)
+    print(f"Plots generated and saved in the '{args.results_path}' directory.")
