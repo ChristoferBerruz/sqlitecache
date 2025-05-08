@@ -25,7 +25,7 @@ def n_requests(request):
 @pytest.fixture(scope="session")
 def results_dir(request):
     """Fixture to get the results directory from the command line."""
-    results_dir = request.config.getoption("--results-dir")
+    yield request.config.getoption("--results-dir")
 
 
 def pytest_collection_modifyitems(config, items):
