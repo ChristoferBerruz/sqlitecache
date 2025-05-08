@@ -3,7 +3,11 @@
 This python package is a persistent key-value cache
 using SQlite as its backend. It supports three eviction
 policies: Least Recently Used (LRU), Least Frequently Used (LFU)
-and a hybrid eviction policy defined in this [paper](https://ieeexplore.ieee.org/document/10454976).
+and a hybrid eviction policy defined in this
+paper: [J. Shah and A. A. Siddiqui, “An improved cache eviction
+strategy: Combining least recently used and least frequently used
+policies,” in 2023 6th International Conference on Advances in
+Science and Technology (ICAST), 2023, pp. 1–6.](https://ieeexplore.ieee.org/document/10454976)
 
 # Requirements
 
@@ -92,3 +96,5 @@ cache_settings = CacheSettings(100) # 100 bytes of cache, no compression, no enc
 lru_cache = LRUCache(db="cache", storage=disk_storage, settings=cache_settings)
 # lru_cache fully initialized and ready to use.
 ```
+
+# Contributions
