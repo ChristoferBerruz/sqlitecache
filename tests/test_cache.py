@@ -330,7 +330,7 @@ class TestSimulation:
         yield 5
 
     @pytest.fixture(scope="class")
-    def recorder(self):
+    def recorder(self, results_dir):
         # Use the recorder such that we can collect the session stats
         _recorder: Dict[str, SimulationResult] = {}
         yield _recorder
@@ -348,7 +348,7 @@ class TestSimulation:
             print(f"Cache: {key}")
             print(df)
             # Save the dataframe to a CSV file
-            filename = f"results/{key}SimulationResults.csv"
+            filename = f"{results_dir}/{key}SimulationResults.csv"
             df.to_csv(filename, index=False)
 
     @pytest.fixture

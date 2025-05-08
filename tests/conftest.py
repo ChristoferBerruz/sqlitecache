@@ -13,12 +13,19 @@ def pytest_configure(config):
 def pytest_addoption(parser):
     parser.addoption("--n-requests", action="store", type=int, default=100)
     parser.addoption("--simulation", action="store_true", default=False)
+    parser.addoption("--results-dir", action="store", default="results")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def n_requests(request):
     """Fixture to get the number of requests from the command line."""
     yield request.config.getoption("--n-requests")
+
+
+@pytest.fixture(scope="session")
+def results_dir(request):
+    """Fixture to get the results directory from the command line."""
+    results_dir = request.config.getoption("--results-dir")
 
 
 def pytest_collection_modifyitems(config, items):
